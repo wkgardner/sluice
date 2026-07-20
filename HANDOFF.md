@@ -217,9 +217,11 @@ From the errata. None block the bootstrap.
 
 ### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-20
 
-**Bootstrap: complete. `pixi run test` → 55 passed (Python 3.14.6, pytest 9.1.1).**
+**Bootstrap: complete and committed. `pixi run test` → 76 passed (Python 3.14.6, pytest 9.1.1).**
 
-- `git init` on `main` — ⛔ **still no commits.** Everything below is uncommitted.
+- `git init` on `main` — ✅ **initial commit exists:** `638b7482` *(bootstrap: repo skeleton,
+  config schema, CI, guardrails, db unit work)*, 24 files, on `main`, not pushed. Working tree
+  clean at that commit apart from this HANDOFF update. db units 1–3 present and green.
 - `pixi.toml` (name `sluice`, `platforms = ["linux-64", "osx-arm64"]`, deps: python 3.14 / pytest 9 /
   structlog) + `pixi.lock` (solved with pixi 0.72.1).
 - `config.example.json` — ~68 keys, **placeholders only**, `slack_bot_token` deliberately omitted.
@@ -329,8 +331,8 @@ actually protected.
 
 1. **Confirm the subsystem order** (§9a — the last open conflict; the other two are resolved).
    Recommendation is to adopt `.claude/README.md` as written, with the B9 caveat noted there.
-2. **Commit the bootstrap** via `git-steward` — clean initial commit on `main`, no secrets, no state.
-   The tree is green (55 passed) and ready; it is waiting only on your go-ahead.
+2. ✅ **Bootstrap committed** 2026-07-20 via `git-steward` — clean initial commit `638b7482` on
+   `main`, 24 files, no secrets, no state; pre-commit gate passed, tree green (76 passed). Not pushed.
 3. **Build Plan A subsystem by subsystem** via the agent team (§9a), starting with **`db`**
    (connection with WAL + `synchronous=NORMAL`, schema, forward-only migrations, the greenfield
    `lifecycle` column and the `WHERE lifecycle='active'` eligibility predicate — errata A1/A2/A3/A4).
