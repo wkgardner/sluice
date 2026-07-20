@@ -1,0 +1,32 @@
+name: Tests
+
+# Run the pytest suite on every push to main and on every pull request.
+# The suite is hermetic (all external services — CephFS, git, Globus, the nvd
+# command, LabKey, Slack — are mocked), so no secrets or runtime services are
+# needed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: pytest (linux-64)
+    runs-on: ubuntu-latest  # linux-64, one of pixi.toml `platforms`
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up the pixi environment
+        uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          # Pin the pixi version that generated pixi.lock so CI installs the
+          # exact same environment. Bump this when you regenerate the lock.
+          pixi-version: v0.72.1
+          # Fail if pixi.lock is out of sync with pixi.toml instead of re-solving.
+          locked: true
+          cache: true
+
+      - name: Run the test suite
+        run: pixi run test

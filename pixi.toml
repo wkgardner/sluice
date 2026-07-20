@@ -1,0 +1,16 @@
+[workspace]
+authors = ["wkgardner <wkgardner@wisc.edu>"]
+channels = ["conda-forge", "bioconda"]
+name = "sluice"
+platforms = ["linux-64", "osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+test = "python -m pytest tests/ -v"
+
+# Core deps only at bootstrap. slack-sdk, labkey, typer, rich, and fastapi
+# arrive with the plans that need them (B and C).
+[dependencies]
+python = ">=3.14.3,<3.15"
+pytest = ">=9.0.2,<10"
+structlog = "*"

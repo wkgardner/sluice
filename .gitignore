@@ -1,0 +1,68 @@
+# sluice — reverse .gitignore (deny-all allowlist).
+#
+# Everything is ignored by default; only paths explicitly re-included with `!`
+# below are tracked. This is a CURATED whitelist: a brand-new file is invisible
+# to git until you add a `!` rule for it. That is the point — nothing is
+# committed by accident. The tradeoff is that each new tracked path is a
+# deliberate one-line decision here.
+
+# 1) Ignore everything.
+*
+
+# 2) ...but let git descend into directories so the `!file` rules below can
+#    reach nested files. Directories re-ignored in section 3 are still skipped.
+!*/
+
+# 3) Never track these, even when a rule below would otherwise match: real
+#    config, secrets, pipeline state, logs, caches, environments, OS cruft.
+.pixi/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+config.json
+config.*.json
+.env
+.env.*
+secrets/
+data/
+*.db
+*.db-wal
+*.db-shm
+logs/
+*.log
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# 4) Packaging, CI, and top-level project metadata.
+!/.gitignore
+!/pixi.toml
+!/pixi.lock
+!/README.md
+!/HANDOFF.md
+!/config.example.json
+!/.github/workflows/*.yml
+
+# 5) The Python project — source and tests, matched by extension so caches and
+#    byte-compiled files are never swept in.
+!/sluice/**/*.py
+!/tests/**/*.py
+
+# 6) Guardrail tooling. The hooks and their wiring are tracked because they must
+#    sync to the CHTC copy to protect production there too (HANDOFF §9b).
+#    NOT the agents — you curate those yourself; add one line per agent you want,
+#    e.g.  !/.claude/agents/plan-author.md
+!/.claude/README.md
+!/.claude/settings.json
+!/.claude/hooks/*.py
+!/.claude/skills/**/*.md
+
+# 7) Docs: build plans and the analysis notes. The design SPECS under
+#    /docs/superpowers/plans are tracked because they are the source of truth
+#    for the plans.
+!/docs/superpowers/plans/*.md
