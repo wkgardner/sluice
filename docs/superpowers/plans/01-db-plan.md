@@ -404,7 +404,7 @@ This deliberately replaces PP's four repeated `try/except sqlite3.OperationalErr
 ALTER ladders (`poller_state_db.py:126-146`), which swallow *every* OperationalError — a locked
 DB or a full disk mid-ALTER is discarded and the process continues on a half-migrated schema.
 
-**Tests** (in `tests/test_db_migrations.py`)
+**Tests** (in `tests/test_db.py` — the whole subsystem's tests are consolidated in one file, not split per the original `test_db_migrations.py`/`test_db_schema.py` sketch)
 - `test_schema_version_is_zero_on_virgin_database` — fresh file, `schema_version(conn) == 0`.
 - `test_initialize_database_applies_all_migrations` — returned list `== [m[0] for m in MIGRATIONS]`
   and afterwards `schema_version(conn) == max(...)`.
@@ -437,7 +437,7 @@ DB or a full disk mid-ALTER is discarded and the process continues on a half-mig
 
 ### Unit 5 — migration 001: `runs`
 
-DDL exactly as §4. **Tests** (in `tests/test_db_schema.py`)
+DDL exactly as §4. **Tests** (in `tests/test_db.py`)
 
 Presence is asserted as a **subset**, never as set equality: later subsystems add columns by
 migration, and an equality assertion would force an edit to this test every time — directly
@@ -702,9 +702,9 @@ is no global pause today (subsystem map lines 370/622).
 
 ## 7. Done criteria
 
-1. `pixi run test` is green, including the two pre-existing tests
-   (`tests/test_dependency_arrows.py`, `tests/test_guard_hook.py` — 55 baseline cases) plus the
-   new `tests/test_db.py`, `tests/test_db_schema.py`, `tests/test_db_migrations.py`.
+1. `pixi run test` is green, including the pre-existing tests
+   (`tests/test_dependency_arrows.py`, `tests/test_guard_hook.py`) plus the new
+   `tests/test_db.py` (the whole db subsystem's tests are consolidated in this one file).
 2. `sluice/core/db.py` imports cleanly with `sluice.gates`, `sluice.api`, and `sluice.cli`
    absent, and imports **nothing outside the standard library**.
 3. `initialize_database(tmp/state.db)` on a fresh path produces a DB where
