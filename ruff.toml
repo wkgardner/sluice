@@ -1,0 +1,13 @@
+# Lint + format config. Rule choices are recorded in docs/adr/0001-docstring-standard.md
+# ("Mechanical enforcement"): defaults + D only; D417 contradicts ADR rule 2; D1 is
+# relaxed for tests whose names already state the behavior.
+
+[lint]
+extend-select = ["D"]
+ignore = ["D417"]
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint.per-file-ignores]
+"tests/**" = ["D1"]
