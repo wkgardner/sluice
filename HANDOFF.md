@@ -240,8 +240,26 @@ From the errata. None block the bootstrap.
     environment, the two files' module-header hunks are interleaved, and the test file resolves db
     functions by module attribute (so a partial split would ship a lying `__all__`) — one honest
     coherent commit beat several fragile ones.
-  - `<this commit>` *(docs: record db subsystem in handoff)*.
+  - `1d998b8` *(docs: record db subsystem complete in handoff)*.
 - Suite grew 76 → 131 passed with the db subsystem tests.
+- ✅ **ADR-0001 (docstring standard) applied + ruff adopted, committed** 2026-07-21 on `main`, not
+  pushed. Two commits:
+  - `b427104` *(docs(db): docstrings per ADR-0001 — contracts into sections, justifications to the
+    plan)* — `sluice/core/db.py` docstrings brought to Google style, contract facts into
+    `Args:`/`Returns:`/`Raises:`/`Yields:` sections, justification prose removed (it lives in
+    `docs/superpowers/plans/01-db-plan.md`); ~60 lines shorter, no behavior change.
+  - `8b508d6` *(build: adopt ruff (lint + format) — defaults + D/google, CI gate)* — `ruff.toml`
+    (defaults + `D`, `convention=google`, `D417` ignored per ADR rule 2, `D1` relaxed under
+    `tests/`), pixi `lint`/`format` tasks + `ruff >=0.14,<0.15` (lock regenerated), CI lint gate
+    before the test step, `.gitignore` allowlist for `/ruff.toml`, one-time format pass on the two
+    test files. `pixi run lint` and 131 tests green under the new gate.
+- ⚠️ **Untracked-by-design, this machine only:** `docs/adr/0001-docstring-standard.md` (ADR-0001
+  itself), `.claude/CLAUDE.md`, the amended `.claude/agents/*.md`
+  (implementer/test-author/code-reviewer/docs-builder now enforce ADR-0001), and the refreshed
+  `docs/dev-cycle/` 01-db artifacts (symbol-based citations) are all still behind the deny-all
+  allowlist `.gitignore` — the human curates the allowlist. Until rules are added, the ADR and the
+  agent-level enforcement exist only in this working copy; `ruff.toml`'s comment references the ADR
+  by path.
 - `pixi.toml` (name `sluice`, `platforms = ["linux-64", "osx-arm64"]`, deps: python 3.14 / pytest 9 /
   structlog) + `pixi.lock` (solved with pixi 0.72.1).
 - `config.example.json` — ~68 keys, **placeholders only**, `slack_bot_token` deliberately omitted.
@@ -360,6 +378,11 @@ actually protected.
    **Next subsystem: `gate` (subsystem 2) — the gate contract** (`db → gate (+ one mock gate
    early) → …`, §9a). Subsystem 2 owns migration **005** (gate-satisfaction columns): the `db`
    plan (F3) deliberately deferred it, and migration 005 is where those columns land.
+3a. ✅ **ADR-0001 + ruff adoption committed** 2026-07-21 (`b427104`, `8b508d6`, and this handoff
+   commit on `main`, not pushed; see §9). Working tree is clean apart from the deliberately
+   untracked files listed in §9. **Open item:** decide whether to add `.gitignore` allowlist rules
+   for `docs/adr/`, `.claude/CLAUDE.md`, `.claude/agents/*.md`, and `docs/dev-cycle/` so ADR-0001
+   and the agents' enforcement of it enter history (human curates the allowlist).
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
