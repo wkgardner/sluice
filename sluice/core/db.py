@@ -50,28 +50,14 @@ def now_iso() -> str:
 def get_connection(db_path: str | os.PathLike[str]) -> sqlite3.Connection:
     """Open a fresh SQLite connection to ``db_path``, configured for this system.
 
-    A *fresh* connection every call — no cached module-level handle, since the DB
-    is the single source of truth and a shared connection's transaction state
-    would make an in-process object authoritative over the file.
-
-    Configuration:
-
-    * ``isolation_level=None`` (autocommit) — Python's default opens an implicit
-      transaction on first DML and holds the write lock, the long-lived write
-      transaction §5 forbids. Batching is opt-in via ``write_txn``.
-    * ``row_factory=sqlite3.Row`` — rows read by column name; positional reads
-      would silently return the wrong column after an additive migration.
-    * ``journal_mode=WAL`` — readers don't block on a writer.
-    * ``synchronous=NORMAL`` — the durability pragma python-poller leaves unset
-      (SQLite defaults to ``2``/FULL). Both pragmas do real work; dropping either
-      is observable.
-
-    ``timeout=5.0`` is passed for legibility only (errata A1): it is already the
-    ``sqlite3.connect`` default, so ``busy_timeout`` is 5000 ms either way and
-    omitting it behaves identically — it is not a fix and buys no contention win.
-
-    Does not create the parent directory or schema: a factory that ran
-    ``makedirs`` would stand up an empty DB next to a typo'd path.
+    Always a fresh connection — a cached handle's transaction state would make an
+    in-process object authoritative over the file, and the DB is the single
+    source of truth (§5). Configured autocommit (only ``write_txn`` opens
+    transactions), ``sqlite3.Row`` (column-keyed reads survive additive
+    migrations), ``journal_mode=WAL`` (readers don't block on a writer), and
+    ``synchronous=NORMAL``. Does not create the parent directory or schema: a
+    factory that ran ``makedirs`` would stand up an empty DB next to a typo'd
+    path.
 
     Args:
         db_path: Path to the SQLite file. Required — a missing path is a caller
@@ -79,12 +65,13 @@ def get_connection(db_path: str | os.PathLike[str]) -> sqlite3.Connection:
 
     Raises:
         sqlite3.OperationalError: The file cannot be opened (incl. a missing
-            parent directory) — raised by ``connect`` before anything is built.
-        sqlite3.DatabaseError: ``db_path`` is an existing non-SQLite file;
-            ``connect`` succeeds and the first pragma fails. This is the covering
-            case (and a *sibling* of ``OperationalError``, not a superclass), so
-            catch it if you want to catch everything this can raise.
+            parent directory).
+        sqlite3.DatabaseError: ``db_path`` is an existing non-SQLite file —
+            the covering case (a *sibling* of ``OperationalError``, not a
+            superclass), so catch it to catch everything this can raise.
     """
+    # timeout=5.0 is already the sqlite3.connect default; passed for legibility
+    # only (errata A1).
     connection = sqlite3.connect(db_path, timeout=5.0, isolation_level=None)
     try:
         connection.row_factory = sqlite3.Row
@@ -105,19 +92,16 @@ def get_connection(db_path: str | os.PathLike[str]) -> sqlite3.Connection:
 def write_txn(db_path: str | os.PathLike[str]) -> Iterator[sqlite3.Connection]:
     """Run a block inside one short, explicit write transaction, then tear it down.
 
-    How §5's "short transactions only" is enforced: the connection is autocommit,
-    so ``write_txn`` is the only thing that opens a transaction and it always
-    closes it. A transaction outliving its block would hold the write lock and
-    starve the daemon and every CLI op.
+    Enforces §5's "short transactions only": the connection is autocommit, so
+    ``write_txn`` is the only thing that opens a transaction and it always closes
+    it. ``BEGIN IMMEDIATE`` takes the write lock up front, so contention waits
+    once at a predictable point instead of failing ``SQLITE_BUSY`` mid-transaction
+    on a lock upgrade. Commits on clean exit; rolls back and re-raises on error;
+    closes either way.
 
-    Uses ``BEGIN IMMEDIATE`` (not deferred ``BEGIN``): it takes the write lock up
-    front, so contention waits once at a predictable point instead of a
-    read-then-write caller failing ``SQLITE_BUSY`` mid-transaction on a lock
-    upgrade. Commits on clean exit; on error rolls back explicitly (not relying on
-    close's implicit discard) and re-raises; closes in ``finally`` either way.
-
-    Yields the open connection. Do not close it or issue COMMIT/ROLLBACK inside
-    the block.
+    Yields:
+        The open connection. Do not close it or issue COMMIT/ROLLBACK inside
+        the block.
     """
     connection = get_connection(db_path)
     try:
@@ -150,15 +134,13 @@ Migration = tuple[int, str, Callable[[sqlite3.Connection], None]]
 def _migration_001_runs(conn: sqlite3.Connection) -> None:
     """Create ``runs`` — the single source of truth for run state (§4).
 
-    One complete authoritative ``CREATE TABLE`` (no later ALTERs). Errata baked
-    in: A2 ``lifecycle`` greenfield (``NOT NULL DEFAULT 'active'`` + CHECK); A3
-    ``protected_at``/``protected_by`` net-new and python-poller's ``locked_at``
-    mutex deliberately not ported; A4 ``globus_task_id`` present from day one (its
-    absence re-submits a duplicate multi-TB transfer), ``slack_thread_ts``
-    likewise. The paired ``(x IS NULL) = (y IS NULL)`` CHECKs are total (never
-    NULL) and encode §5's "quarantined ⇔ error set" and the same for protection.
-    No gate-satisfaction columns (mock: subsystem 2's migration 005; production:
-    Plan B) and no FOREIGN KEYs.
+    One complete authoritative ``CREATE TABLE``, no later ALTERs. Errata baked
+    in: A2 ``lifecycle`` greenfield; A3 ``protected_at``/``protected_by`` net-new
+    (python-poller's ``locked_at`` mutex deliberately not ported); A4
+    ``globus_task_id`` and ``slack_thread_ts`` present from day one. The paired
+    ``(x IS NULL) = (y IS NULL)`` CHECKs encode §5's "quarantined ⇔ error set"
+    and the same for protection. No gate-satisfaction columns (mock: subsystem
+    2's migration 005; production: Plan B) and no FOREIGN KEYs.
     """
     conn.execute(
         "CREATE TABLE runs ("
@@ -195,10 +177,7 @@ def _migration_002_poller_metadata(conn: sqlite3.Connection) -> None:
     PK so callers can ``ON CONFLICT(key) DO UPDATE``.
     """
     conn.execute(
-        "CREATE TABLE poller_metadata ("
-        "    key   TEXT PRIMARY KEY,"
-        "    value TEXT"
-        ")"
+        "CREATE TABLE poller_metadata (    key   TEXT PRIMARY KEY,    value TEXT)"
     )
 
 
@@ -261,15 +240,21 @@ def schema_version(conn: sqlite3.Connection) -> int:
 
 
 def apply_migrations(conn: sqlite3.Connection) -> list[int]:
-    """Apply every pending migration in ascending order; return the versions applied.
+    """Apply every pending migration in ascending order.
 
     Creates the ledger (``schema_migrations``, the ``000_bootstrap`` of §4) if
-    absent. Each migration runs in its **own** ``BEGIN IMMEDIATE``…``COMMIT`` with
-    its version recorded only after its body succeeds — so a failure records
-    nothing and leaves earlier migrations committed (guarded by
-    ``test_failed_migration_does_not_record_its_version``). A version higher than
-    ``max(MIGRATIONS)`` raises ``SchemaVersionError`` (forward-only). Returns
-    ``[]`` on an idempotent second run.
+    absent. Each migration runs in its **own** ``BEGIN IMMEDIATE``…``COMMIT``
+    with its version recorded only after its body succeeds — a failure records
+    nothing and leaves earlier migrations committed. Idempotent: a second run
+    applies nothing.
+
+    Returns:
+        The versions applied, ``[]`` if none were pending.
+
+    Raises:
+        SchemaVersionError: The DB records a version newer than
+            ``max(MIGRATIONS)`` (migrations are forward-only), or ``MIGRATIONS``
+            itself is non-contiguous.
     """
     # Validate MIGRATIONS at runtime (not only via the structural test), so the
     # tuple is self-validating however assembled — a later subsystem appending
@@ -322,12 +307,20 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
 
 
 def initialize_database(db_path: str | os.PathLike[str]) -> list[int]:
-    """Open ``db_path``, apply all pending migrations, close, and return versions.
+    """Open ``db_path``, apply all pending migrations, and close.
 
     Passes the connection straight to ``apply_migrations`` — **never** through
     ``write_txn`` (F2 nesting rule), since ``apply_migrations`` owns a
     ``BEGIN IMMEDIATE`` per migration and an outer transaction would raise
     ``cannot start a transaction within a transaction``.
+
+    Returns:
+        The versions applied, ``[]`` if none were pending.
+
+    Raises:
+        SchemaVersionError: See ``apply_migrations``.
+        sqlite3.OperationalError: ``db_path`` cannot be opened (see
+            ``get_connection``).
     """
     connection = get_connection(db_path)
     try:
@@ -357,25 +350,18 @@ def insert_run(
 ) -> bool:
     """Insert a newly-detected run once; return whether a row was created.
 
-    "Stamp once, never change": the first sighting of ``name`` lands an ``active``
-    row with the ``pipeline_version`` it was born with (§8 — frozen at detection);
-    every later sighting is a no-op returning ``False``. The caller owns the
-    connection, so a detection sweep can batch inside one ``write_txn``.
-
-    Uses ``ON CONFLICT(name) DO NOTHING``, **not** ``INSERT OR IGNORE``: the latter
-    suppresses every constraint class, so a bad row (e.g. NULL ``pipeline_version``)
-    would be silently reported as "already exists" — the blanket suppression this
-    subsystem condemns in python-poller. ``DO NOTHING`` suppresses only the PK
-    conflict and lets genuine violations raise.
+    "Stamp once, never change": the first sighting of ``name`` lands an
+    ``active`` row with the ``pipeline_version`` it was born with (§8 — frozen at
+    detection); every later sighting is a no-op returning ``False``. Uses
+    ``ON CONFLICT(name) DO NOTHING``, **not** ``INSERT OR IGNORE`` — the latter
+    suppresses every constraint class, silently reporting a bad row as "already
+    exists". The caller owns the connection, so a detection sweep can batch
+    inside one ``write_txn``.
 
     Args:
-        conn: Caller-supplied autocommit connection.
         name: Run identity — the human-typed folder name (F1).
-        pipeline_version: Keyword-only, required (no baked-in default; omitting is
-            a ``TypeError``).
+        pipeline_version: Keyword-only, required — no baked-in default.
         detected_at: Defaults to ``now_iso()``.
-        experiment_id: Optional, nullable (B2 is Plan B's).
-        size_tb: Optional.
 
     Raises:
         sqlite3.IntegrityError: On a NOT NULL/CHECK violation — never swallowed.
@@ -411,16 +397,12 @@ def update_run(
 
     A primitive, not a policy: which columns may change and which must move
     together is enforced by ``set_gate`` (B2) and the schema's CHECKs, not here.
-
-    Security-critical: identifiers can't be bound, so the ``SET`` clause is built
-    from column names. Every key is whitelisted against the live ``runs`` columns
-    (``PRAGMA table_info``) and anything off the list raises ``UnknownColumnError``
-    *before* any SQL is built; every **value** is a bound parameter, so SQL in a
-    value is stored literally, not executed. Empty ``fields`` is a ``False`` no-op.
-
-    Caller hazard: ``UnknownColumnError`` subclasses ``KeyError``, so a bare
-    ``except KeyError`` around ``update_run`` (e.g. in subsystem-8 ``set_gate``)
-    would swallow it — it signals a caller bug, not a recoverable condition.
+    Security-critical: column identifiers can't be bound as parameters, so every
+    key is whitelisted against the live ``runs`` columns *before* any SQL is
+    built, and every value is a bound parameter — SQL in a value is stored
+    literally, not executed. Empty ``fields`` is a ``False`` no-op. Caller
+    hazard: ``UnknownColumnError`` subclasses ``KeyError``, so a bare
+    ``except KeyError`` around ``update_run`` would swallow a caller bug.
 
     Raises:
         UnknownColumnError: A key is not a live ``runs`` column.
@@ -446,9 +428,7 @@ def update_run(
     parameters = [fields[column] for column in columns]
     parameters.append(name)
 
-    cursor = conn.execute(
-        f"UPDATE runs SET {assignments} WHERE name = ?", parameters
-    )
+    cursor = conn.execute(f"UPDATE runs SET {assignments} WHERE name = ?", parameters)
     return cursor.rowcount > 0
 
 
