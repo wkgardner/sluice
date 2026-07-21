@@ -215,13 +215,33 @@ From the errata. None block the bootstrap.
 
 ## 9. Current status — what physically exists
 
-### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-20
+### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-21
 
-**Bootstrap: complete and committed. `pixi run test` → 76 passed (Python 3.14.6, pytest 9.1.1).**
+**Bootstrap + db subsystem: complete and committed. `pixi run test` → 131 passed (Python 3.14.6, pytest 9.1.1).**
 
 - `git init` on `main` — ✅ **initial commit exists:** `638b7482` *(bootstrap: repo skeleton,
-  config schema, CI, guardrails, db unit work)*, 24 files, on `main`, not pushed. Working tree
-  clean at that commit apart from this HANDOFF update. db units 1–3 present and green.
+  config schema, CI, guardrails, db unit work)*, 24 files, on `main`, not pushed. db units 1–3
+  present and green at bootstrap.
+- ✅ **db subsystem complete and committed** 2026-07-21 on `main`, not pushed. Three commits:
+  - `b65fd1d4` *(docs: point db plan tests at the consolidated test_db.py)* — plan reconciled to
+    the single `tests/test_db.py` (the per-file `test_db_migrations.py`/`test_db_schema.py` split
+    the plan sketched was never adopted).
+  - `fdb7471c` *(db: complete the SQLite state store (engine, schema, primitives))* — units 4–13:
+    forward-only migration engine (`schema_version`, `apply_migrations`, `initialize_database`,
+    `SchemaVersionError`), schema migrations 001–004 (`runs`, `poller_metadata`, `control_audit`,
+    `idx_runs_eligible`), row primitives (`insert_run`, `get_run`, `update_run` +
+    `UnknownColumnError`), the F4 eligibility predicate (`select_active_runs`,
+    `ACTIVE_RUNS_WHERE`), and metadata primitives, plus subsystem integration tests (two-writer
+    `BEGIN IMMEDIATE` contention, lifecycle journey). Resolves A1/A2/A3/A4, B1/B2, F1/F2/F4.
+    This commit also carried the doc/test-verbosity trim (units 1–3 docstrings compressed;
+    over-tested trivial cases dropped — `now_iso` 6→2, the `busy_timeout` documentation-test, the
+    `render_timestamp_like_now_iso` ordering helper) and the test-loop recalibration behind it.
+    A green code+tests hunk-split was not forced: `git add -p` is unavailable in the build
+    environment, the two files' module-header hunks are interleaved, and the test file resolves db
+    functions by module attribute (so a partial split would ship a lying `__all__`) — one honest
+    coherent commit beat several fragile ones.
+  - `<this commit>` *(docs: record db subsystem in handoff)*.
+- Suite grew 76 → 131 passed with the db subsystem tests.
 - `pixi.toml` (name `sluice`, `platforms = ["linux-64", "osx-arm64"]`, deps: python 3.14 / pytest 9 /
   structlog) + `pixi.lock` (solved with pixi 0.72.1).
 - `config.example.json` — ~68 keys, **placeholders only**, `slack_bot_token` deliberately omitted.
@@ -333,9 +353,13 @@ actually protected.
    Recommendation is to adopt `.claude/README.md` as written, with the B9 caveat noted there.
 2. ✅ **Bootstrap committed** 2026-07-20 via `git-steward` — clean initial commit `638b7482` on
    `main`, 24 files, no secrets, no state; pre-commit gate passed, tree green (76 passed). Not pushed.
-3. **Build Plan A subsystem by subsystem** via the agent team (§9a), starting with **`db`**
-   (connection with WAL + `synchronous=NORMAL`, schema, forward-only migrations, the greenfield
-   `lifecycle` column and the `WHERE lifecycle='active'` eligibility predicate — errata A1/A2/A3/A4).
+3. ✅ **`db` subsystem built and committed** 2026-07-21 (see §9: commits `b65fd1d4`, `fdb7471c`,
+   and this handoff commit on `main`, not pushed). Connection with WAL + `synchronous=NORMAL`,
+   schema + forward-only migrations, greenfield `lifecycle`, the `WHERE lifecycle='active'`
+   eligibility predicate — errata A1/A2/A3/A4, B1/B2, forks F1/F2/F4 all resolved; 131 passed.
+   **Next subsystem: `gate` (subsystem 2) — the gate contract** (`db → gate (+ one mock gate
+   early) → …`, §9a). Subsystem 2 owns migration **005** (gate-satisfaction columns): the `db`
+   plan (F3) deliberately deferred it, and migration 005 is where those columns land.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
