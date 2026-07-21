@@ -66,11 +66,14 @@ def test_guard_exists():
 
 # --- writes into production are refused, on every known root -----------------
 
+
 @pytest.mark.parametrize("prod", PROD_ROOTS)
 @pytest.mark.parametrize("tool", ["Write", "Edit", "NotebookEdit"])
 def test_writes_into_production_are_denied(prod, tool):
     key = "notebook_path" if tool == "NotebookEdit" else "file_path"
-    assert verdict({"tool_name": tool, "tool_input": {key: f"{prod}/poller.py"}}) == "DENY"
+    assert (
+        verdict({"tool_name": tool, "tool_input": {key: f"{prod}/poller.py"}}) == "DENY"
+    )
 
 
 @pytest.mark.parametrize("prod", PROD_ROOTS)
@@ -95,11 +98,12 @@ def test_mutating_shell_commands_against_production_are_denied(prod, template):
 
 # --- but reading production stays possible: Plan B ports from it -------------
 
+
 @pytest.mark.parametrize("prod", PROD_ROOTS)
 @pytest.mark.parametrize(
     "template",
     [
-        "ls -d {p} 2>&1",           # the `2>&1` false positive that once blocked this
+        "ls -d {p} 2>&1",  # the `2>&1` false positive that once blocked this
         "cat {p}/poller.py 2>&1",
         "grep -n def {p}/poller.py",
         "find {p} -name '*.py'",
@@ -118,6 +122,7 @@ def test_reading_production_source_is_allowed(prod):
 
 # --- secrets are refused wherever they live ---------------------------------
 
+
 @pytest.mark.parametrize("secret", [SECRET_A, SECRET_B])
 def test_reading_a_secret_file_is_denied(secret):
     assert verdict(file_tool("Read", f"{MAC_PROD}/data/{secret}")) == "DENY"
@@ -135,6 +140,7 @@ def test_writing_a_secret_file_is_denied(secret):
 
 
 # --- ordinary sluice work is never impeded ----------------------------------
+
 
 @pytest.mark.parametrize(
     "sluice_root",

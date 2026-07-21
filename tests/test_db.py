@@ -762,7 +762,9 @@ def test_no_production_gate_columns_yet(tmp_path):
 
     assert "name" in actual, "runs table must exist for this guard to be meaningful"
     leaked = actual & PRODUCTION_GATE_COLUMNS
-    assert leaked == set(), f"production gate columns pre-empted Plan B: {sorted(leaked)}"
+    assert leaked == set(), (
+        f"production gate columns pre-empted Plan B: {sorted(leaked)}"
+    )
 
 
 def test_no_mock_gate_columns_in_db_subsystem(tmp_path):
@@ -1224,9 +1226,7 @@ def test_insert_run_propagates_a_constraint_violation(tmp_path):
     """
     with initialized_connection(tmp_path / "state.db") as connection:
         with pytest.raises(sqlite3.IntegrityError):
-            sluice.core.db.insert_run(
-                connection, "run_epsilon", pipeline_version=None
-            )
+            sluice.core.db.insert_run(connection, "run_epsilon", pipeline_version=None)
 
 
 # ---- Unit 10 — get_run ----------------------------------------------------
@@ -1468,7 +1468,9 @@ def test_row_primitives_leave_no_open_transaction(tmp_path, exercise):
             f"SELECT {value_column} FROM {table} WHERE {key_column} = ?", (key_value,)
         ).fetchone()
 
-    assert row is not None, "the write was not committed — a second connection cannot see it"
+    assert row is not None, (
+        "the write was not committed — a second connection cannot see it"
+    )
     assert row[value_column] == expected
 
 
@@ -1683,7 +1685,9 @@ def test_set_then_get_metadata_round_trips(tmp_path):
     The base case of the key/value store: what went in comes out unchanged.
     """
     with initialized_connection(tmp_path / "state.db") as connection:
-        sluice.core.db.set_metadata(connection, "last_poll", "2026-07-20T00:00:00+00:00")
+        sluice.core.db.set_metadata(
+            connection, "last_poll", "2026-07-20T00:00:00+00:00"
+        )
 
         assert (
             sluice.core.db.get_metadata(connection, "last_poll")
@@ -1757,13 +1761,13 @@ def test_db_defines_no_metadata_key_values():
     """
     forbidden_keys = {"paused", "pipeline_profile", "disk_halted"}
     module_strings = {
-        value
-        for value in module_level_values(sluice.core.db)
-        if isinstance(value, str)
+        value for value in module_level_values(sluice.core.db) if isinstance(value, str)
     }
 
     leaked = module_strings & forbidden_keys
-    assert leaked == set(), f"db hardcodes daemon/control metadata keys: {sorted(leaked)}"
+    assert leaked == set(), (
+        f"db hardcodes daemon/control metadata keys: {sorted(leaked)}"
+    )
 
 
 # --------------------------------------------------------------------------

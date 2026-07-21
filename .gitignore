@@ -66,3 +66,7 @@ logs/
 #    /docs/superpowers/plans are tracked because they are the source of truth
 #    for the plans.
 !/docs/superpowers/plans/*.md
+
+# 8) Ruff linting
+!/ruff.toml
+

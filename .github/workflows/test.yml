@@ -28,5 +28,8 @@ jobs:
           locked: true
           cache: true
 
+      - name: Lint and check formatting
+        run: pixi run lint
+
       - name: Run the test suite
         run: pixi run test
