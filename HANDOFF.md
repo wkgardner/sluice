@@ -1,6 +1,6 @@
 # sluice — Handoff & Compaction Record
 
-**Updated:** 2026-07-20 (macOS session — bootstrap executed, agent team + guardrail hooks landed)
+**Updated:** 2026-07-22 (macOS session — gate subsystem committed; events plan approved, all flags decided)
 **Purpose:** The single file to read when resuming this project — across sessions, across the two
 environments, and across context compaction. If a summary ever replaces the live conversation, start
 here.
@@ -215,9 +215,10 @@ From the errata. None block the bootstrap.
 
 ## 9. Current status — what physically exists
 
-### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-21
+### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-22
 
-**Bootstrap + db subsystem: complete and committed. `pixi run test` → 131 passed (Python 3.14.6, pytest 9.1.1).**
+**Bootstrap + db + gate subsystems: complete and committed. `pixi run test` → 171 passed
+(Python 3.14.6, pytest 9.1.1); `pixi run lint` clean; dependency-arrow guard green.**
 
 - `git init` on `main` — ✅ **initial commit exists:** `638b7482` *(bootstrap: repo skeleton,
   config schema, CI, guardrails, db unit work)*, 24 files, on `main`, not pushed. db units 1–3
@@ -253,13 +254,36 @@ From the errata. None block the bootstrap.
     `tests/`), pixi `lint`/`format` tasks + `ruff >=0.14,<0.15` (lock regenerated), CI lint gate
     before the test step, `.gitignore` allowlist for `/ruff.toml`, one-time format pass on the two
     test files. `pixi run lint` and 131 tests green under the new gate.
-- ⚠️ **Untracked-by-design, this machine only:** `docs/adr/0001-docstring-standard.md` (ADR-0001
-  itself), `.claude/CLAUDE.md`, the amended `.claude/agents/*.md`
+- ✅ **gate subsystem (2 of 9) complete and committed** 2026-07-22 on `main`, not pushed
+  (plan: `docs/superpowers/plans/02-gate-plan.md` — 9 TDD units, per-unit adversarial review,
+  approvals recorded in the plan). One commit:
+  - `bb22eec` *(gate: add contract records, validate_gates, mock gates, migration 005)* —
+    `sluice/core/gate.py` (`GateOutcome`, `GateResult`, the frozen ten-field `Gate`,
+    `validate_gates` returning TRUE execution order — the mechanical B3 guard),
+    `sluice/core/mock_gates.py` (`MOCK_ALPHA`, `MOCK_BETA`, `MOCK_GATES`; sqlite3 and
+    `sluice.core.db` structurally unreachable per ADR-0002 d.2), migration **005** appended to
+    core `db.py` (`mock_alpha_done`/`mock_beta_done`, `INTEGER NOT NULL DEFAULT 0`; F3-revision
+    approved — gate-column migration fns live in core's ladder, precedent for 006+),
+    `tests/test_gate.py` (~41 tests incl. the two closing review findings), the two
+    pre-authorized `tests/test_db.py` edits (relocated F3 guard; end-state test now asserts
+    version 5), and a `tests/test_dependency_arrows.py` teardown fix (restores `sys.modules` so
+    enum `is` comparisons survive the blocker test). Resolves errata B3/A6, B2 contract half,
+    B4 via ADR-0002, B6 deferred by approved flag; B1 not pre-empted. Suite 131 → 171 passed.
+- ✅ **events plan (subsystem 3) reviewed, amended, fully approved, committed** — `e59ae20`
+  *(docs: add events plan (03) — notifier contract and wide-event model)*. All five sign-off
+  flags user-decided (⚑1–⚑4 2026-07-21, ⚑5 2026-07-22): quarantine as second canonical emission
+  point; `quarantined` → severity `critical`; `halted` dropped; `Notifier` fixed at three
+  methods; **daemon-only notifier model approved (⚑5)** — Plan A's `RunContext` carries no
+  notifier field (spec §6 revised). B8 fully resolved by the plan's design; **B9 explicitly not
+  closed** — emission wiring lands with subsystems 6/9.
+- ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **three** ADRs:
+  `0001-docstring-standard.md`, `0002-gate-failure-and-persistence.md` (all failures quarantine;
+  gates never write run state), `0003-core-import-policy.md` (structlog allowed in core;
+  stdlib-only retired) — plus `.claude/CLAUDE.md`, the amended `.claude/agents/*.md`
   (implementer/test-author/code-reviewer/docs-builder now enforce ADR-0001), and the refreshed
-  `docs/dev-cycle/` 01-db artifacts (symbol-based citations) are all still behind the deny-all
-  allowlist `.gitignore` — the human curates the allowlist. Until rules are added, the ADR and the
-  agent-level enforcement exist only in this working copy; `ruff.toml`'s comment references the ADR
-  by path.
+  `docs/dev-cycle/` artifacts are all still behind the deny-all allowlist `.gitignore` — the
+  human curates the allowlist. **Standing open item:** no allowlist rule for `docs/adr/` yet, so
+  ADR-0001/0002/0003 exist only in this working copy while code commits cite them by name.
 - `pixi.toml` (name `sluice`, `platforms = ["linux-64", "osx-arm64"]`, deps: python 3.14 / pytest 9 /
   structlog) + `pixi.lock` (solved with pixi 0.72.1).
 - `config.example.json` — ~68 keys, **placeholders only**, `slack_bot_token` deliberately omitted.
@@ -379,10 +403,18 @@ actually protected.
    early) → …`, §9a). Subsystem 2 owns migration **005** (gate-satisfaction columns): the `db`
    plan (F3) deliberately deferred it, and migration 005 is where those columns land.
 3a. ✅ **ADR-0001 + ruff adoption committed** 2026-07-21 (`b427104`, `8b508d6`, and this handoff
-   commit on `main`, not pushed; see §9). Working tree is clean apart from the deliberately
-   untracked files listed in §9. **Open item:** decide whether to add `.gitignore` allowlist rules
-   for `docs/adr/`, `.claude/CLAUDE.md`, `.claude/agents/*.md`, and `docs/dev-cycle/` so ADR-0001
-   and the agents' enforcement of it enter history (human curates the allowlist).
+   commit on `main`, not pushed; see §9). **Open item (still standing, now covers three ADRs):**
+   decide whether to add `.gitignore` allowlist rules for `docs/adr/` (ADR-0001/0002/0003),
+   `.claude/CLAUDE.md`, `.claude/agents/*.md`, and `docs/dev-cycle/` so the ADRs the commits cite
+   enter history (human curates the allowlist).
+3b. ✅ **gate subsystem committed + events plan approved and committed** 2026-07-22 (`bb22eec`,
+   `e59ae20`, and this handoff commit on `main`, not pushed; see §9). Subsystem 2 complete: 9
+   units, reviewed, 171 tests green. Subsystem 3 fully planned and decided — all five events-plan
+   flags approved, including ⚑5 (daemon-only notifier model; spec §6 revised).
+   **Next: build `events` (subsystem 3)** via the §9a loop against
+   `docs/superpowers/plans/03-events-plan.md` (8 units, `tests/test_events.py`). After it lands:
+   **plan subsystem 4 (`context`)** on the approved daemon-only notifier model — `RunContext`
+   carries no notifier field (events plan ⚑5 + §7 carry-forward).
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
