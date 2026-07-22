@@ -767,21 +767,6 @@ def test_no_production_gate_columns_yet(tmp_path):
     )
 
 
-def test_no_mock_gate_columns_in_db_subsystem(tmp_path):
-    """No ``runs`` column name mentions a mock/reference gate (fork F3).
-
-    Reference-gate columns (``mock_alpha_done``/``mock_beta_done``) belong to
-    migration 005; core must not name gates (design section 4: the daemon "knows
-    the contract, not the gates"). Subsystem 2 relocates this test when it lands 005.
-    """
-    with initialized_connection(tmp_path / "state.db") as connection:
-        actual = runs_columns(connection)
-
-    assert "name" in actual, "runs table must exist for this guard to be meaningful"
-    gate_named = {column for column in actual if "mock" in column}
-    assert gate_named == set(), f"core named a gate column: {sorted(gate_named)}"
-
-
 def test_runs_name_is_primary_key(tmp_path):
     """``name`` is the primary key: it is flagged ``pk`` and rejects a duplicate.
 
@@ -1092,15 +1077,18 @@ def test_index_migration_applies_to_a_pre_existing_database(tmp_path, monkeypatc
         assert row["pipeline_version"] == "reference-v1"
 
 
-def test_all_four_migrations_yield_version_four_and_every_object(tmp_path):
-    """The db subsystem's end state: version 4, all tables and the index present.
+def test_all_five_migrations_yield_version_five_and_every_object(tmp_path):
+    """The full ladder's end state: version 5, all tables and the index present.
 
-    Done criterion (plan 01, section 7.3): ``initialize_database`` on a fresh path
-    reaches ``schema_version == 4`` with ``schema_migrations``, ``runs``,
+    Migration 005 (mock gate columns) is subsystem 2's, appended per plan 02
+    §3.5. The end-state literal stays hardcoded — generalizing to
+    ``max(MIGRATIONS)`` would pin nothing; this test is edited consciously each
+    time the ladder grows. ``initialize_database`` on a fresh path reaches
+    ``schema_version == 5`` with ``schema_migrations``, ``runs``,
     ``poller_metadata``, ``control_audit`` and ``idx_runs_eligible`` all created.
     """
     with initialized_connection(tmp_path / "state.db") as connection:
-        assert sluice.core.db.schema_version(connection) == 4
+        assert sluice.core.db.schema_version(connection) == 5
 
         tables = {
             row["name"]

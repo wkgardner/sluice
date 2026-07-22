@@ -58,8 +58,21 @@ def _core_module_names():
 
 
 def test_core_never_imports_gates_api_or_cli():
+    """Import every ``sluice.core`` module with the forbidden packages blocked.
+
+    Teardown restores the *original* module objects into ``sys.modules`` rather
+    than leaving it stripped: evicting them would make later tests re-import
+    fresh copies of ``sluice`` classes, and enum members compared with ``is``
+    (the loop's spec'd branch pattern, plan 02 unit 2) would no longer match
+    references bound at collection time.
+    """
     names = _core_module_names()
 
+    saved_sluice_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "sluice" or name.startswith("sluice.")
+    }
     _drop_sluice_modules()
     blocker = _DependencyBlocker(FORBIDDEN)
     sys.meta_path.insert(0, blocker)
@@ -73,3 +86,4 @@ def test_core_never_imports_gates_api_or_cli():
     finally:
         sys.meta_path.remove(blocker)
         _drop_sluice_modules()
+        sys.modules.update(saved_sluice_modules)

@@ -211,15 +211,35 @@ def _migration_004_idx_runs_eligible(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX idx_runs_eligible ON runs (lifecycle, errored_at)")
 
 
+def _migration_005_mock_gate_columns(conn: sqlite3.Connection) -> None:
+    """Add the reference-gate satisfaction columns to ``runs`` (plan 02 §3.5).
+
+    Owned by subsystem 2 (gate), not db — gate-column migration fns live in this
+    ladder because ``initialize_database`` must work with ``sluice.gates`` absent
+    (plan 02 §2 F3-revision; the precedent 006+ follows). ``INTEGER NOT NULL
+    DEFAULT 0``, never nullable: a nullable satisfaction column gives reconcile
+    three-valued logic (``WHERE col = 0`` silently misses NULL), and the constant
+    default makes the ALTER legal on a populated table — pre-existing rows land
+    unsatisfied, which is correct because they never ran the gates.
+    """
+    conn.execute(
+        "ALTER TABLE runs ADD COLUMN mock_alpha_done INTEGER NOT NULL DEFAULT 0",
+    )
+    conn.execute(
+        "ALTER TABLE runs ADD COLUMN mock_beta_done INTEGER NOT NULL DEFAULT 0",
+    )
+
+
 # (version, name, apply_fn) each. The framework (unit 4) runs each apply_fn in its
 # own BEGIN IMMEDIATE/COMMIT and records the version only on success, so the
 # apply_fns issue plain DDL and touch neither the transaction nor the ledger.
-# Later subsystems append 005+; a shipped migration is never edited.
+# Later subsystems append 006+; a shipped migration is never edited.
 MIGRATIONS: tuple[Migration, ...] = (
     (1, "001_runs", _migration_001_runs),
     (2, "002_poller_metadata", _migration_002_poller_metadata),
     (3, "003_control_audit", _migration_003_control_audit),
     (4, "004_idx_runs_eligible", _migration_004_idx_runs_eligible),
+    (5, "005_mock_gate_columns", _migration_005_mock_gate_columns),
 )
 
 
