@@ -141,16 +141,16 @@ config-derivable (`nvd_helpers.py:66-68`). Context-scope resolution:
    named carry-forwards (§7) — Plan A owns neither the field nor the validator,
    but it fixes the rule they must obey.
 
-### B2 — the experiment_id chicken-and-egg (context's path half). RESOLVED for Plan A by keying `workdir` on `name`; production experiment-keyed paths deferred.
+### B2 — the experiment_id chicken-and-egg (context's path half). RESOLVED for Plan A by keying `workdir` on `name` — ⚑1 APPROVED (2026-07-23, decided by the user); production experiment-keyed paths deferred.
 
 Errata B2: spec §6 derives *all* paths from `experiment_id`, but a gate
 *produces* `experiment_id` (PP `poller.py:1490`) and it names the whole staging
 tree (`{staging}/{experiment_id}/...`, `poller.py:1502-1504`) — so a context
 built before the experiment gate has run has no `experiment_id` to key on.
-Plan A has **no experiment gate** (the mock gates need only a scratch dir), and
-`experiment_id` is nullable in the schema. Resolution: **Plan A's single path,
-`workdir`, is keyed on `run_row["name"]`, not `experiment_id`** —
-`workdir = Path(config["local_staging_dir"]) / name`. This is deliberate and
+Plan A has **no experiment gate** (the mock gates need only a working
+directory), and `experiment_id` is nullable in the schema. Resolution: **Plan
+A's single path, `workdir`, is keyed on `run_row["name"]`, not `experiment_id`**
+— `workdir = Path(config["local_staging_dir"]) / name`. This is deliberate and
 sidesteps B2 entirely for Plan A:
 - `name` is the `runs` **immutable primary key, always stamped by `insert_run`**
   and never changed ("stamp once, never change"), so `workdir` is always
@@ -165,10 +165,12 @@ sidesteps B2 entirely for Plan A:
 `workdir` is therefore a **generic per-run working directory**, not the
 production experiment-staging tree. Plan B's production gates read their
 experiment_id-keyed destination fields (deferred, §1); `workdir` stays name-keyed
-permanently. **This is a design precedent — flagged for sign-off, ⚑1**, with the
-above as the recommendation. Deliberately NOT copied: PP's
-`base_local_dir / str(experiment_id)` (`poller.py:1502-1504`) — that is Plan B's
-experiment-keyed derivation, not Plan A's `workdir`.
+permanently. **⚑1 APPROVED (2026-07-23, decided by the user)** — with the Plan B
+note that `experiment_id` keys the production destination/pipeline-facing paths
+and leads user-facing surfaces (Slack threads, CLI listings) once it exists.
+Deliberately NOT copied: PP's `base_local_dir / str(experiment_id)`
+(`poller.py:1502-1504`) — that is Plan B's experiment-keyed derivation, not
+Plan A's `workdir`.
 
 ### A4 — touched, not owned.
 
@@ -227,7 +229,7 @@ B2). The daemon guarantees the row is non-`None` (§1, missing-row = caller's).
 
 | RunContext field | Derivation | Source |
 |---|---|---|
-| `workdir` | `pathlib.Path(config["local_staging_dir"]) / run_row["name"]` | config key + row name (B2: name-keyed, ⚑1) |
+| `workdir` | `pathlib.Path(config["local_staging_dir"]) / run_row["name"]` | config key + row name (B2: name-keyed, ⚑1 approved) |
 | `db_path` | `pathlib.Path(config["state_file"])` | config key (fact 3 — DB path travels as a field) |
 | `config`  | the passed mapping, snapshot-wrapped read-only | passed through |
 
@@ -242,6 +244,13 @@ stops.
 - **Required config keys by subscript, never `.get(..., default)`.** A missing
   `local_staging_dir` or `state_file` raises `KeyError` naming the key — a
   load-time error, not a silent production fallback (guardrail §8). Unit 2 pins it.
+- **The workdir root comes EXCLUSIVELY from `config["local_staging_dir"]`** —
+  never a default of `/scratch` or any assumed system scratch/temp location
+  (user-added constraint, recorded with the ⚑1 stamp): the deployment cluster
+  (CHTC) has **no** `/scratch` filesystem, so a pattern-matched scratch default
+  would be not just a forbidden silent fallback but a broken path at runtime. A
+  missing `local_staging_dir` fails loud at config load (loader, §7), with the
+  subscript `KeyError` above as resolve_context's own backstop.
 - **`run_row["name"]` is validated as a single safe path component before it
   becomes a path.** resolve_context is the boundary where a stored string identity
   turns into a filesystem path, so it is the right place to refuse a traversing
@@ -343,7 +352,9 @@ RED: the first behavioral test fails at `AttributeError`/`ImportError` on
   `ctx.workdir == pathlib.Path("/staging/run_A")`,
   `ctx.db_path == pathlib.Path("data/x.db")`, and `ctx.config["local_staging_dir"]
   == "/staging"` (the config is carried, read-only). The happy path pins all
-  three §3.2 derivations at once, including the B2 name-keyed workdir (⚑1).
+  three §3.2 derivations at once, including the B2 name-keyed workdir (⚑1,
+  approved) — and that the workdir root is the config value, no other root
+  (§3.3: never `/scratch`/system-temp).
 - `test_resolve_context_creates_no_filesystem_state` — call resolve_context with
   `local_staging_dir = str(tmp_path / "staging")` (which does **not** exist) and a
   `state_file` under a non-existent dir: returns normally; afterward
@@ -365,7 +376,8 @@ RED: the first behavioral test fails at `AttributeError`/`ImportError` on
   `make_config()` minus `local_staging_dir` → `KeyError` whose message names
   `"local_staging_dir"`; minus `state_file` → `KeyError` naming `"state_file"`.
   Required keys are read by subscript, never `.get` with a default — no silent
-  production fallback (guardrail §8).
+  production fallback (guardrail §8), and in particular no `/scratch`/system-temp
+  workdir default (§3.3: CHTC has no `/scratch`).
 - `test_resolve_context_rejects_a_traversing_run_name` — parametrized over
   names `"../evil"`, `"a/b"`, `"..\\evil"`, `".."`, `"."`, `""` → each raises
   `ValueError` naming the offending value; a plain name `"run_A"` resolves
@@ -421,6 +433,7 @@ behavior of units 1–2.
 | **RunContext carries no notifier** (spec §6 revision / events ⚑5, fact 1) | a notifier field; importing `slack_sdk` | `test_run_context_fields_are_exactly_workdir_db_path_config` + the `slack_sdk`-by-name half of `test_context_is_stdlib_only_and_db_free` (unit 1) |
 | **LEAN field set — no early destination/remote path fields** (fact 2) | a Plan B path field leaking into Plan A | `test_run_context_fields_are_exactly_workdir_db_path_config` (unit 1) |
 | **No path derived from `__file__`** (A7/D2 trap) | copying PP's launch-dir install-location coupling | `test_context_derives_no_path_from_dunder_file` (unit 1) + `workdir` under config staging in `test_resolve_context_derives_workdir_db_path_and_config` (unit 2) |
+| **Workdir root exclusively from `config["local_staging_dir"]` — no `/scratch`/system-temp default; CHTC has no `/scratch`** (⚑1 stamp note, §3.3) | a hardcoded scratch/temp fallback when the key is missing, or as the path root | `test_resolve_context_fails_loud_on_a_missing_config_key` + the workdir-root assertion of `test_resolve_context_derives_workdir_db_path_and_config` (unit 2) |
 | **`gates → core`; core imports with gates absent** | importing a gates/api/cli module | `test_context_is_stdlib_only_and_db_free` (unit 1); `tests/test_dependency_arrows.py` auto-covers the new module |
 | **No silent config fallback** (guardrail §8) | `.get(key, default)` instead of `config[key]` | `test_resolve_context_fails_loud_on_a_missing_config_key` (unit 2) |
 | **Injection defense at the identity→path boundary** | joining a raw run name into a path | `test_resolve_context_rejects_a_traversing_run_name` (unit 2) |
@@ -442,10 +455,11 @@ behavior of units 1–2.
    — no notifier, no destination/remote path fields; the record is frozen and its
    `config` is read-only.
 4. `resolve_context(run_row, config)` takes exactly `(run_row, config)`, derives
-   `workdir = {config[local_staging_dir]}/{row[name]}` and
-   `db_path = {config[state_file]}`, carries config read-only, creates nothing on
-   disk, is deterministic, fails loud on a missing required key, refuses a
-   traversing name, and ignores `globus_task_id`/`slack_thread_ts`.
+   `workdir = {config[local_staging_dir]}/{row[name]}` (no other root — never a
+   `/scratch`/system-temp default, §3.3) and `db_path = {config[state_file]}`,
+   carries config read-only, creates nothing on disk, is deterministic, fails
+   loud on a missing required key, refuses a traversing name, and ignores
+   `globus_task_id`/`slack_thread_ts`.
 5. A resolved context built from a real `sqlite3.Row` drives `MOCK_ALPHA.run(ctx)`
    after the caller mkdirs `ctx.workdir` — RunContext satisfies the gate
    contract's `workdir` requirement end-to-end.
@@ -476,7 +490,9 @@ behavior of units 1–2.
   `ctx.db_path` (spec §2.6); ADR-0002 keeps gate-side run-state writes out —
   context carrying `db_path` does not change that.
 - **Config loader (Plan C / subsystem 9):** comprehensive required-key validation
-  at load. resolve_context fails loud per-key as a backstop (§3.3), but the loader
+  at load — including `local_staging_dir`, whose absence must fail there, never
+  fall back to `/scratch` or any system temp (§3.3: CHTC has no `/scratch`).
+  resolve_context fails loud per-key as a backstop (§3.3), but the loader
   should validate the whole required surface once at startup — and, per **D2**,
   validate that the NVD launch-dir config key resolves to a **local POSIX** path
   **not under the staging mount**. A missing required key is a load-time error,
@@ -490,8 +506,11 @@ behavior of units 1–2.
     them, and must **resolve B2** there: either the experiment gate produces
     `experiment_id` and resolve_context returns a *partial* context whose path
     fields are unavailable until it is satisfied, or `experiment_id` is stamped at
-    detection (making LabKey part of detection, not a gate). Plan A's name-keyed
-    `workdir` (⚑1) is unaffected — it stays generic and name-keyed.
+    detection (making LabKey part of detection, not a gate). Per the ⚑1 stamp:
+    `experiment_id` keys the production destination/pipeline-facing paths and
+    leads user-facing surfaces (Slack threads, CLI listings) once it exists;
+    Plan A's name-keyed `workdir` (⚑1, approved) is unaffected — it stays
+    generic and name-keyed.
   - **ADR-0002's structural guarantee does not extend to production gates.** The
     `sqlite3`/`sluice.core.db` import ban covers the mock gates only (plan 02
     unit 7); Plan B gates may legitimately import what their work needs, so
@@ -514,18 +533,22 @@ behavior of units 1–2.
 
 ---
 
-## ⚑ Human sign-off
+## ⚑ Human sign-off — ⚑1 APPROVED (2026-07-23, decided by the user)
 
-1. **§2 B2 — `workdir` keyed on `run_row["name"]`, not `experiment_id`
-   (RECOMMENDED).** Plan A's single computed path is
-   `Path(config["local_staging_dir"]) / name`, making `workdir` a generic,
+1. **§2 B2 — `workdir` keyed on `run_row["name"]`, not `experiment_id` —
+   APPROVED (2026-07-23, decided by the user).** Plan A's single computed path
+   is `Path(config["local_staging_dir"]) / name`, making `workdir` a generic,
    always-resolvable, stable-across-looks per-run working directory and
    sidestepping the experiment_id chicken-and-egg (B2) entirely for Plan A.
    Rationale: `name` is the immutable primary key, always stamped by
    `insert_run` and never changed; keying on `experiment_id` (nullable in
    Plan A) would require a forbidden silent NULL fallback and would move
    `workdir` mid-run when the experiment gate later assigns `experiment_id`.
-   This sets a precedent — `workdir` stays name-keyed permanently while Plan B's
-   production destination paths are experiment_id-keyed (separate fields).
-   Flagged because it is a design precedent touching the open B2 fork;
-   recommendation is to adopt as written.
+   The precedent stands: `workdir` stays name-keyed permanently, while — per
+   the user's Plan B note recorded with the stamp — **`experiment_id` keys
+   Plan B's production destination/pipeline-facing paths and leads user-facing
+   surfaces (Slack threads, CLI listings) once it exists**. User-added
+   constraint encoded alongside the approval: the deployment cluster (CHTC)
+   has **no** `/scratch` filesystem — the workdir root comes exclusively from
+   `config["local_staging_dir"]`, never a `/scratch`/system-temp default, and
+   a missing key fails loud at config load (§3.3, §5, §7).
