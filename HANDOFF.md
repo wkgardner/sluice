@@ -1,6 +1,6 @@
 # sluice — Handoff & Compaction Record
 
-**Updated:** 2026-07-22 (macOS session — gate subsystem committed; events plan approved, all flags decided)
+**Updated:** 2026-07-23 (macOS session — events subsystem committed; context plan committed, one flag open)
 **Purpose:** The single file to read when resuming this project — across sessions, across the two
 environments, and across context compaction. If a summary ever replaces the live conversation, start
 here.
@@ -217,8 +217,8 @@ From the errata. None block the bootstrap.
 
 ### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-22
 
-**Bootstrap + db + gate subsystems: complete and committed. `pixi run test` → 171 passed
-(Python 3.14.6, pytest 9.1.1); `pixi run lint` clean; dependency-arrow guard green.**
+**Bootstrap + db + gate + events subsystems: complete and committed. `pixi run test` → 206 passed
+(Python 3.14.6, pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard green.**
 
 - `git init` on `main` — ✅ **initial commit exists:** `638b7482` *(bootstrap: repo skeleton,
   config schema, CI, guardrails, db unit work)*, 24 files, on `main`, not pushed. db units 1–3
@@ -276,14 +276,37 @@ From the errata. None block the bootstrap.
   methods; **daemon-only notifier model approved (⚑5)** — Plan A's `RunContext` carries no
   notifier field (spec §6 revised). B8 fully resolved by the plan's design; **B9 explicitly not
   closed** — emission wiring lands with subsystems 6/9.
+- ✅ **events subsystem (3 of 9) complete and committed** 2026-07-23 on `main`, not pushed
+  (plan: `docs/superpowers/plans/03-events-plan.md` — 8 units, reviewed per-unit). One commit:
+  - `0db7a27` *(events: notifier contract, safe_notify, wide-event builders/emitters)* —
+    `sluice/core/events.py` (`Notifier` Protocol — runtime_checkable, three run-lifecycle
+    methods; `safe_notify` — notification failure never fails work, one `notify.failed` error
+    line; `run_outcome` + `SEVERITY_BY_RUN_OUTCOME` — closed five-outcome vocabulary,
+    quarantined=critical, no halted, no retry tier; `build_run_event`/`emit_run_event` —
+    canonical `run.finished` as a pure function of a runs row, two emission points per ⚑1;
+    `build_gate_event`/`emit_gate_event`; `control_event` — no notifier parameter, §11
+    structural; `format_duration`; structlog per ADR-0003) and `tests/test_events.py`
+    (24 test functions / 35 cases, incl. the zero-ms duration pin and mutation-witnessed
+    additions; ast-parse import hygiene; real-schema `sqlite3.Row` integration). All five
+    plan flags user-approved. Resolves B8; B9 design-resolved, wiring deferred to 6/9.
+    Suite 171 → 206 passed.
+- ✅ **context plan (subsystem 4) reviewed and committed** — `39597e0` *(docs: add context
+  plan (04) — lean RunContext, pure resolve_context)*. Adversarially reviewed (zero confirmed
+  rubric findings), four LOW amendments applied. Encodes the four 2026-07-22 user-decided
+  facts (no notifier field; LEAN three-field record; pure `resolve_context(row, config)`;
+  resume tokens never carried/recomputed — A5/A7/D2, `__file__` ban). **⚑1 still OPEN —
+  under active user decision:** `workdir` keyed on `run_row["name"]` rather than
+  `experiment_id` (the B2 sidestep, recommended). The build does not start until it closes.
 - ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **three** ADRs:
   `0001-docstring-standard.md`, `0002-gate-failure-and-persistence.md` (all failures quarantine;
   gates never write run state), `0003-core-import-policy.md` (structlog allowed in core;
   stdlib-only retired) — plus `.claude/CLAUDE.md`, the amended `.claude/agents/*.md`
   (implementer/test-author/code-reviewer/docs-builder now enforce ADR-0001), and the refreshed
-  `docs/dev-cycle/` artifacts are all still behind the deny-all allowlist `.gitignore` — the
-  human curates the allowlist. **Standing open item:** no allowlist rule for `docs/adr/` yet, so
-  ADR-0001/0002/0003 exist only in this working copy while code commits cite them by name.
+  `docs/dev-cycle/` artifacts (now `01-db/`, `02-gate/`, **and `03-events/`** — the events
+  build's per-unit artifacts, untracked like their siblings) are all still behind the deny-all
+  allowlist `.gitignore` — the human curates the allowlist. **Standing open item:** no allowlist
+  rule for `docs/adr/` yet, so ADR-0001/0002/0003 exist only in this working copy while code
+  commits cite them by name.
 - `pixi.toml` (name `sluice`, `platforms = ["linux-64", "osx-arm64"]`, deps: python 3.14 / pytest 9 /
   structlog) + `pixi.lock` (solved with pixi 0.72.1).
 - `config.example.json` — ~68 keys, **placeholders only**, `slack_bot_token` deliberately omitted.
@@ -411,10 +434,15 @@ actually protected.
    `e59ae20`, and this handoff commit on `main`, not pushed; see §9). Subsystem 2 complete: 9
    units, reviewed, 171 tests green. Subsystem 3 fully planned and decided — all five events-plan
    flags approved, including ⚑5 (daemon-only notifier model; spec §6 revised).
-   **Next: build `events` (subsystem 3)** via the §9a loop against
-   `docs/superpowers/plans/03-events-plan.md` (8 units, `tests/test_events.py`). After it lands:
-   **plan subsystem 4 (`context`)** on the approved daemon-only notifier model — `RunContext`
-   carries no notifier field (events plan ⚑5 + §7 carry-forward).
+3c. ✅ **events subsystem built and committed + context plan committed** 2026-07-23 (`0db7a27`,
+   `39597e0`, and this handoff commit on `main`, not pushed; see §9). Subsystem 3 complete: 8
+   units, reviewed per-unit, 171 → 206 tests green, all five plan flags user-approved.
+   Subsystem 4 (`context`) fully planned and adversarially reviewed — **one flag OPEN, under
+   active user decision: ⚑1, `workdir` keyed on `run_row["name"]` vs `experiment_id`** (the B2
+   sidestep; recommendation is name-keyed as written).
+   **Next: close ⚑1, then build `context` (subsystem 4)** via the §9a loop against
+   `docs/superpowers/plans/04-context-plan.md` (3 units, `tests/test_context.py`), on the
+   approved daemon-only notifier model — `RunContext` carries no notifier field.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
