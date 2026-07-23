@@ -1,6 +1,6 @@
 # sluice — Handoff & Compaction Record
 
-**Updated:** 2026-07-23 (macOS session — events subsystem committed; context plan committed, one flag open)
+**Updated:** 2026-07-23 (macOS session — context subsystem committed; all four core-data subsystems done)
 **Purpose:** The single file to read when resuming this project — across sessions, across the two
 environments, and across context compaction. If a summary ever replaces the live conversation, start
 here.
@@ -215,10 +215,11 @@ From the errata. None block the bootstrap.
 
 ## 9. Current status — what physically exists
 
-### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-22
+### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-23
 
-**Bootstrap + db + gate + events subsystems: complete and committed. `pixi run test` → 206 passed
-(Python 3.14.6, pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard green.**
+**Bootstrap + db + gate + events + context subsystems: complete and committed — all four core-data
+subsystems (db, gate, events, context) are green. `pixi run test` → 227 passed (Python 3.14.6,
+pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard green.**
 
 - `git init` on `main` — ✅ **initial commit exists:** `638b7482` *(bootstrap: repo skeleton,
   config schema, CI, guardrails, db unit work)*, 24 files, on `main`, not pushed. db units 1–3
@@ -294,16 +295,37 @@ From the errata. None block the bootstrap.
   plan (04) — lean RunContext, pure resolve_context)*. Adversarially reviewed (zero confirmed
   rubric findings), four LOW amendments applied. Encodes the four 2026-07-22 user-decided
   facts (no notifier field; LEAN three-field record; pure `resolve_context(row, config)`;
-  resume tokens never carried/recomputed — A5/A7/D2, `__file__` ban). **⚑1 still OPEN —
-  under active user decision:** `workdir` keyed on `run_row["name"]` rather than
-  `experiment_id` (the B2 sidestep, recommended). The build does not start until it closes.
+  resume tokens never carried/recomputed — A5/A7/D2, `__file__` ban). ⚑1 (`workdir` keyed
+  on `run_row["name"]` rather than `experiment_id`, the B2 sidestep) was subsequently
+  **closed — APPROVED 2026-07-23**; see the context subsystem entry below.
+- ✅ **context subsystem (4 of 9) complete and committed** 2026-07-23 on `main`, not pushed
+  (plan: `docs/superpowers/plans/04-context-plan.md` — 3 units, reviewed per-unit). Two commits:
+  - `56bc950` *(context: frozen RunContext and pure resolve_context)* —
+    `sluice/core/context.py` (frozen `RunContext(workdir, db_path, config)`, LEAN closed field
+    set — no notifier per events ⚑5, no Plan B path fields — with `config` sealed read-only at
+    construction via dict-copy + `MappingProxyType`; pure `resolve_context(run_row, config)` —
+    name-keyed `workdir` under `config["local_staging_dir"]` **only** (⚑1 approved; CHTC has no
+    `/scratch`, so never a scratch/system-temp default), traversal-name `ValueError` defense at
+    the identity→path boundary, fail-loud `KeyError` on missing config keys, no
+    mkdir/DB/`.resolve()`) and `tests/test_context.py` (15 test functions / 21 cases across the
+    3 units: ast-parse import hygiene incl. the `__file__` ban, the closed/frozen/read-only
+    record pins, the derivation/purity/determinism pins, and the unit-3 integrations — a real
+    `sqlite3.Row` from `get_run` drives the derivation and a resolved context drives
+    `MOCK_ALPHA.run(ctx)` to SUCCESS). Resolves errata A5, A7/D2, and B2 for Plan A.
+    Suite 206 → 227 passed.
+  - `ce4b872` *(docs: stamp context-plan flag 1 approved; record no-/scratch constraint)* —
+    the four LOW review amendments plus the ⚑1 stamp (APPROVED 2026-07-23, decided by the user,
+    with the Plan B note that `experiment_id` keys production destination paths and leads
+    user-facing surfaces once it exists) and the CHTC no-`/scratch` constraint encoded in the
+    plan's invariant table, test sketches, and acceptance criteria.
 - ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **three** ADRs:
   `0001-docstring-standard.md`, `0002-gate-failure-and-persistence.md` (all failures quarantine;
   gates never write run state), `0003-core-import-policy.md` (structlog allowed in core;
   stdlib-only retired) — plus `.claude/CLAUDE.md`, the amended `.claude/agents/*.md`
   (implementer/test-author/code-reviewer/docs-builder now enforce ADR-0001), and the refreshed
-  `docs/dev-cycle/` artifacts (now `01-db/`, `02-gate/`, **and `03-events/`** — the events
-  build's per-unit artifacts, untracked like their siblings) are all still behind the deny-all
+  `docs/dev-cycle/` artifacts (now `01-db/`, `02-gate/`, `03-events/`, **and the new
+  `04-context/`** — the context build's per-unit artifacts, untracked like their siblings) are
+  all still behind the deny-all
   allowlist `.gitignore` — the human curates the allowlist. **Standing open item:** no allowlist
   rule for `docs/adr/` yet, so ADR-0001/0002/0003 exist only in this working copy while code
   commits cite them by name.
@@ -437,12 +459,17 @@ actually protected.
 3c. ✅ **events subsystem built and committed + context plan committed** 2026-07-23 (`0db7a27`,
    `39597e0`, and this handoff commit on `main`, not pushed; see §9). Subsystem 3 complete: 8
    units, reviewed per-unit, 171 → 206 tests green, all five plan flags user-approved.
-   Subsystem 4 (`context`) fully planned and adversarially reviewed — **one flag OPEN, under
-   active user decision: ⚑1, `workdir` keyed on `run_row["name"]` vs `experiment_id`** (the B2
-   sidestep; recommendation is name-keyed as written).
-   **Next: close ⚑1, then build `context` (subsystem 4)** via the §9a loop against
-   `docs/superpowers/plans/04-context-plan.md` (3 units, `tests/test_context.py`), on the
-   approved daemon-only notifier model — `RunContext` carries no notifier field.
+   Subsystem 4 (`context`) fully planned and adversarially reviewed — one flag then open (⚑1,
+   closed 2026-07-23; see 3d).
+3d. ✅ **⚑1 closed and context subsystem built and committed** 2026-07-23 (`56bc950`, `ce4b872`,
+   and this handoff commit on `main`, not pushed; see §9). Subsystem 4 complete: 3 units,
+   reviewed per-unit, 206 → 227 tests green; ⚑1 APPROVED (name-keyed `workdir`; CHTC
+   no-`/scratch` constraint recorded with the stamp). **All four core-data subsystems — db,
+   gate, events, context — are now committed and green.** Standing items unchanged: ADRs
+   still gitignored (3a), `docs/dev-cycle/` untracked incl. the new `04-context/` artifacts,
+   no git remote configured.
+   **Next: plan `profile` (subsystem 5)** via the §9a loop (`… → context → profile →
+   reconcile → …`) — applicability lives in the profile, not the gate (§5).
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
