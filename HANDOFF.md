@@ -1,6 +1,6 @@
 # sluice — Handoff & Compaction Record
 
-**Updated:** 2026-07-23 (macOS session — context subsystem committed; all four core-data subsystems done)
+**Updated:** 2026-07-24 (macOS session — profile subsystem committed; 5 of 9 Plan A subsystems done)
 **Purpose:** The single file to read when resuming this project — across sessions, across the two
 environments, and across context compaction. If a summary ever replaces the live conversation, start
 here.
@@ -215,11 +215,11 @@ From the errata. None block the bootstrap.
 
 ## 9. Current status — what physically exists
 
-### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-23
+### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-24
 
-**Bootstrap + db + gate + events + context subsystems: complete and committed — all four core-data
-subsystems (db, gate, events, context) are green. `pixi run test` → 227 passed (Python 3.14.6,
-pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard green.**
+**Bootstrap + db + gate + events + context + profile subsystems: complete and committed — 5 of 9
+Plan A subsystems (db, gate, events, context, profile) are green. `pixi run test` → 253 passed
+(Python 3.14.6, pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard green.**
 
 - `git init` on `main` — ✅ **initial commit exists:** `638b7482` *(bootstrap: repo skeleton,
   config schema, CI, guardrails, db unit work)*, 24 files, on `main`, not pushed. db units 1–3
@@ -318,13 +318,38 @@ pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard 
     with the Plan B note that `experiment_id` keys production destination paths and leads
     user-facing surfaces once it exists) and the CHTC no-`/scratch` constraint encoded in the
     plan's invariant table, test sketches, and acceptance criteria.
+- ✅ **profile subsystem (5 of 9) complete and committed** 2026-07-24 on `main`, not pushed
+  (plan: `docs/superpowers/plans/05-profile-plan.md` — 7 units, reviewed per-unit; both human
+  sign-off flags stamped 2026-07-23). Two commits (plus this handoff commit):
+  - `3ed1f6e` *(profile: applicability, frozen Profile, load_profile freeze)* —
+    `sluice/core/profile.py` (`Applicability` closed vocabulary `required|optional|disabled`;
+    frozen validated `Profile` — `validate_gates` in `__post_init__`, applicability covers the
+    gate ids exactly in both directions, every value an `Applicability` member, `applicability`
+    sealed read-only via `MappingProxyType(dict(...))`; `build_profile` pair-splitter;
+    `required_gates` completion-predicate seam with optional/disabled excluded; `load_profile` +
+    `UnknownProfileError` — the freeze, no default registry / no fallback, plus the per-run
+    registry-coherence `key==id` check; the two shipped reference profiles `REFERENCE_PROFILE` +
+    `REFERENCE_PROFILE_ALPHA_DISABLED` in `REFERENCE_PROFILES`, ⚑2) and `tests/test_profile.py`
+    (7 units — ast-parse import hygiene incl. the `sqlite3`/`db` structural freeze backstop, the
+    B3-order / exact-coverage / read-only record pins, the freeze + coherence pins, the
+    two-profile registry, and the real-`sqlite3.Row` integration resolving two runs to two shipped
+    definitions while a drifted version fails loud). Import set is closed to stdlib +
+    `sluice.core.gate` + `sluice.core.mock_gates`, so the module structurally cannot read
+    `metadata.pipeline_profile` (the freeze, §8). Resolves B1 (mechanism —
+    applicability-models-config-switches; `required_gates` excluding disabled is the
+    `nvd_auto_run=false` loop-forever fix); extends the B3/A6 execution-order guard into every
+    profile; B4 cited via ADR-0002 (no retry field, closed vocabulary). ⚑1 APPROVED (deadlock
+    rule deferred to reconcile with the definition of "due"), ⚑2 DECIDED (ship two profiles).
+    Suite 227 → 253 passed.
+  - `5a96646` *(docs: add profile plan (05) — reviewed, both flags stamped)* — the reviewed,
+    amended plan, tracked via the plans allowlist.
 - ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **three** ADRs:
   `0001-docstring-standard.md`, `0002-gate-failure-and-persistence.md` (all failures quarantine;
   gates never write run state), `0003-core-import-policy.md` (structlog allowed in core;
   stdlib-only retired) — plus `.claude/CLAUDE.md`, the amended `.claude/agents/*.md`
   (implementer/test-author/code-reviewer/docs-builder now enforce ADR-0001), and the refreshed
-  `docs/dev-cycle/` artifacts (now `01-db/`, `02-gate/`, `03-events/`, **and the new
-  `04-context/`** — the context build's per-unit artifacts, untracked like their siblings) are
+  `docs/dev-cycle/` artifacts (now `01-db/`, `02-gate/`, `03-events/`, `04-context/`, **and the
+  new `05-profile/`** — the profile build's per-unit artifacts, untracked like their siblings) are
   all still behind the deny-all
   allowlist `.gitignore` — the human curates the allowlist. **Standing open item:** no allowlist
   rule for `docs/adr/` yet, so ADR-0001/0002/0003 exist only in this working copy while code
@@ -470,6 +495,20 @@ actually protected.
    no git remote configured.
    **Next: plan `profile` (subsystem 5)** via the §9a loop (`… → context → profile →
    reconcile → …`) — applicability lives in the profile, not the gate (§5).
+3e. ✅ **profile subsystem built and committed** 2026-07-24 (`3ed1f6e`, `5a96646`, and this
+   handoff commit on `main`, not pushed; see §9). Subsystem 5 complete: 7 units, reviewed
+   per-unit, 227 → 253 tests green; both flags stamped 2026-07-23 (⚑1 APPROVED — no
+   profile-side deadlock ban; ⚑2 DECIDED — two reference profiles ship). **Plan A now 5 of 9
+   core subsystems done — db, gate, events, context, profile all committed and green.**
+   Standing items unchanged: ADRs 0001-0003 still gitignored (3a), `docs/dev-cycle/` untracked
+   incl. the new `05-profile/` artifacts, no git remote configured; CHTC drift since 2026-07-17
+   (§2/§3) still unresolved.
+   **Next: plan `reconcile` (subsystem 6)** via the §9a loop (`… → profile → reconcile →
+   audit → …`). It inherits two named obligations deferred here per ⚑1 — the
+   required-needs-optional deadlock rule and the definition of "a due optional" (both decided
+   at reconcile, jointly) — plus the disabled-is-satisfied treatment (skip / needs-unblock /
+   never-block) and the vacuous-completion edge (`required_gates(profile) == ()` ⇒ complete);
+   the ready-made substrate for the disabled path is the shipped `REFERENCE_PROFILE_ALPHA_DISABLED`.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
