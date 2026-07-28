@@ -1,6 +1,6 @@
 # sluice — Handoff & Compaction Record
 
-**Updated:** 2026-07-24 (macOS session — profile subsystem committed; 5 of 9 Plan A subsystems done)
+**Updated:** 2026-07-28 (macOS session — reconcile committed, 6 of 9 done; **ADR-0004 binary contracts executed in code**; next: audit — see §10 item 3g)
 **Purpose:** The single file to read when resuming this project — across sessions, across the two
 environments, and across context compaction. If a summary ever replaces the live conversation, start
 here.
@@ -28,10 +28,13 @@ LabKey register). The **architecture is approved** (design of record). The **tra
 designed and — on macOS — now EXECUTED**: the repo skeleton, config schema, CI, lockfile, and the
 dependency-arrow guard test all exist and `pixi run test` is green.
 
-**Still no pipeline logic and still no commits.** The immediate path is: commit the bootstrap →
-build **Plan A (control core)** subsystem by subsystem via the agent team (§9a) → Plan B (production
-gates) → Plan C (API + CLI). python-poller keeps running untouched throughout; sluice stays
-observe-only until Plan A+B reach parity.
+**Plan A is 6 of 9 subsystems built, committed, and green (24 commits on `main`, none pushed —
+no remote configured).** db, gate, events, context, profile, reconcile are done; `pixi run test` →
+304 passed, lint clean. **ADR-0004 (binary contracts) is executed in code:** the profile vocabulary
+is now `required|disabled` — a run's contract is binary, every contract gate mandatory, excluded
+gates absent; there is no runtime optional tier. Remaining Plan A: audit → control → daemon. Then
+Plan B (production gates) → Plan C (API + CLI). python-poller keeps running untouched throughout;
+sluice stays observe-only until Plan A+B reach parity.
 
 ---
 
@@ -215,11 +218,12 @@ From the errata. None block the bootstrap.
 
 ## 9. Current status — what physically exists
 
-### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-24
+### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-28
 
-**Bootstrap + db + gate + events + context + profile subsystems: complete and committed — 5 of 9
-Plan A subsystems (db, gate, events, context, profile) are green. `pixi run test` → 253 passed
-(Python 3.14.6, pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard green.**
+**Bootstrap + db + gate + events + context + profile + reconcile subsystems: complete and
+committed — 6 of 9 Plan A subsystems are green. `pixi run test` → 304 passed (Python 3.14.6,
+pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard green
+(auto-covering `sluice.core.reconcile`).**
 
 - `git init` on `main` — ✅ **initial commit exists:** `638b7482` *(bootstrap: repo skeleton,
   config schema, CI, guardrails, db unit work)*, 24 files, on `main`, not pushed. db units 1–3
@@ -343,16 +347,47 @@ Plan A subsystems (db, gate, events, context, profile) are green. `pixi run test
     Suite 227 → 253 passed.
   - `5a96646` *(docs: add profile plan (05) — reviewed, both flags stamped)* — the reviewed,
     amended plan, tracked via the plans allowlist.
-- ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **three** ADRs:
+- ✅ **reconcile subsystem (6 of 9) complete and committed** 2026-07-28 on `main`, not pushed
+  (plan: `docs/superpowers/plans/06-reconcile-plan.md` — the ADR-0004 rewrite, re-reviewed, all
+  three ⚑ flags stamped 2026-07-27; 4 units incl. unit 0, reviewed per-unit). The 2026-07-24 pause
+  resolved (§10 item 3f): the user rejected the runtime optional tier outright, recorded as
+  **ADR-0004 (binary contracts)** — a run's contract is binary (every contract gate mandatory,
+  excluded gates absent; no optional tier); **any** contract gate returning SKIPPED quarantines
+  (d.4, closing C4); remediation is exclusion via the subsystem-8 op (d.3); trait-based contract
+  construction is Plan B's (d.1/d.3). Three commits (plus this handoff commit):
+  - `8127aab` *(profile: remove the OPTIONAL applicability tier (ADR-0004))* — unit 0:
+    `Applicability.OPTIONAL` removed from the committed profile subsystem (vocabulary now
+    `required|disabled`; `required_gates` = the contract). Exactly the five pre-authorized
+    structural `tests/test_profile.py` edits + six named docstring-only touches (incl. the single
+    `tests/test_gate.py` line), verified by the unit-0 reviewer — zero findings, every hunk
+    matched to an authorization; both shipped reference profiles unchanged.
+  - `44b44cf` *(reconcile: pure is_complete and next_gate over binary contracts)* —
+    `sluice/core/reconcile.py`: pure `is_complete(run_row, profile)` and
+    `next_gate(run_row, profile)`, both behind the shared up-front
+    `_require_gate_columns_present` fail-loud pre-check (defeats the `all()` short-circuit;
+    uniform `KeyError` across `dict` and `sqlite3.Row`); import set closed to stdlib +
+    `core.gate` + `core.profile` with every clock/db/entropy/network module forbidden by name
+    (purity structural); no optional/due/retry logic — the binary model. `tests/test_reconcile.py`:
+    purity/import hygiene, signature pins, the completion truth table,
+    disabled-satisfies-by-absence, selection-identity cases, the exhaustive
+    `next_gate is None ⟺ is_complete` theorem over `{0,1}^n` × four contract shapes,
+    real-`sqlite3.Row` integrations driving both shipped profiles to completion, and
+    stale-`completed_at` re-derivation. Resolves errata C4's reconcile half; discharges plan 05
+    ⚑1 as moot. Suite 253 → 304 passed.
+  - `a52940f` *(docs: add reconcile plan (06) — ADR-0004 rewrite, all flags stamped)* — the
+    reviewed plan, tracked via the plans allowlist.
+- ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **four** ADRs:
   `0001-docstring-standard.md`, `0002-gate-failure-and-persistence.md` (all failures quarantine;
   gates never write run state), `0003-core-import-policy.md` (structlog allowed in core;
-  stdlib-only retired) — plus `.claude/CLAUDE.md`, the amended `.claude/agents/*.md`
-  (implementer/test-author/code-reviewer/docs-builder now enforce ADR-0001), and the refreshed
-  `docs/dev-cycle/` artifacts (now `01-db/`, `02-gate/`, `03-events/`, `04-context/`, **and the
-  new `05-profile/`** — the profile build's per-unit artifacts, untracked like their siblings) are
-  all still behind the deny-all
+  stdlib-only retired), **and the new `0004-binary-contracts.md`** (a run's contract is binary —
+  no runtime optional tier; any contract gate returning SKIPPED quarantines; remediation is
+  exclusion via the subsystem-8 op; trait-based contract construction is Plan B's) — plus
+  `.claude/CLAUDE.md`, the amended `.claude/agents/*.md`
+  (implementer/test-author/code-reviewer/docs-builder now enforce ADR-0001), and the
+  `docs/dev-cycle/` artifacts (`01-db/` through `05-profile/`, with **`06-reconcile/` being
+  generated now** — untracked like their siblings) are all still behind the deny-all
   allowlist `.gitignore` — the human curates the allowlist. **Standing open item:** no allowlist
-  rule for `docs/adr/` yet, so ADR-0001/0002/0003 exist only in this working copy while code
+  rule for `docs/adr/` yet, so ADR-0001/0002/0003/0004 exist only in this working copy while code
   commits cite them by name.
 - `pixi.toml` (name `sluice`, `platforms = ["linux-64", "osx-arm64"]`, deps: python 3.14 / pytest 9 /
   structlog) + `pixi.lock` (solved with pixi 0.72.1).
@@ -473,8 +508,8 @@ actually protected.
    early) → …`, §9a). Subsystem 2 owns migration **005** (gate-satisfaction columns): the `db`
    plan (F3) deliberately deferred it, and migration 005 is where those columns land.
 3a. ✅ **ADR-0001 + ruff adoption committed** 2026-07-21 (`b427104`, `8b508d6`, and this handoff
-   commit on `main`, not pushed; see §9). **Open item (still standing, now covers three ADRs):**
-   decide whether to add `.gitignore` allowlist rules for `docs/adr/` (ADR-0001/0002/0003),
+   commit on `main`, not pushed; see §9). **Open item (still standing, now covers FOUR ADRs):**
+   decide whether to add `.gitignore` allowlist rules for `docs/adr/` (ADR-0001/0002/0003/0004),
    `.claude/CLAUDE.md`, `.claude/agents/*.md`, and `docs/dev-cycle/` so the ADRs the commits cite
    enter history (human curates the allowlist).
 3b. ✅ **gate subsystem committed + events plan approved and committed** 2026-07-22 (`bb22eec`,
@@ -509,6 +544,38 @@ actually protected.
    at reconcile, jointly) — plus the disabled-is-satisfied treatment (skip / needs-unblock /
    never-block) and the vacuous-completion edge (`required_gates(profile) == ()` ⇒ complete);
    the ready-made substrate for the disabled path is the shipped `REFERENCE_PROFILE_ALPHA_DISABLED`.
+3f. ✅ **reconcile pause resolved — all three sign-off flags decided by the user 2026-07-27**
+   (was: PAUSED mid-sign-off 2026-07-24; the review record — APPROVE WITH SHOULD-FIX, core logic
+   cleared with no deadlock/equivalence hole, two should-fix amendments applied — stands, its
+   conclusions folded into the shipped plan). The decisions, recorded in the plan's sign-off
+   section and in **ADR-0004 (binary contracts, `docs/adr/0004-binary-contracts.md`)**:
+   - **⚑1 — REJECTED AS FRAMED, superseded by ADR-0004.** The user rejected the runtime optional
+     tier outright: anything optional is not in the contract; optional steps are not run-then-
+     skipped. A run's contract is binary — every contract gate mandatory, excluded gates absent.
+     The "due optional" definition and the required-needs-optional deadlock rule are **discharged
+     as moot**, closing plan 05 ⚑1's deferral; unit 0 removed `Applicability.OPTIONAL` so the
+     tier cannot silently return.
+   - **⚑2 — RESOLVED, stronger than proposed (ADR-0004 d.4).** **ANY** contract gate returning
+     SKIPPED quarantines the run (no optional-skip branch exists); the column is never set, so C4
+     closes. Recovery is `clear_error` + optionally the subsystem-8 exclusion op (d.3).
+   - **⚑3 — APPROVED AS REWORDED.** `next_gate` stays `(run_row, profile)` and never reads the
+     pointers; the question "does Plan A build `backtrack`/`fastforward`, and if so who honors
+     the pointer?" is routed to the subsystem-8/9 plans, with the binding constraint that a
+     pointer-writing op with no honoring reader is a defect.
+3g. ✅ **reconcile subsystem built and committed** 2026-07-28 (`8127aab`, `44b44cf`, `a52940f`,
+   and this handoff commit on `main`, not pushed; see §9). Subsystem 6 complete: 4 units incl.
+   the unit-0 profile amendment, reviewed per-unit, 253 → 304 tests green. **Plan A now 6 of 9
+   subsystems done — db, gate, events, context, profile, reconcile all committed and green; the
+   profile vocabulary is binary (`required|disabled`).**
+   Standing items: `docs/adr/` now holds FOUR gitignored ADRs (0001–0004 — the 3a allowlist item
+   grows again); `docs/dev-cycle/` untracked (the `06-reconcile/` artifacts being generated now);
+   no git remote configured; CHTC drift since 2026-07-17 (§2/§3) still unresolved.
+   **Next: plan `audit` (subsystem 7)** via the §9a loop (`… → reconcile → audit → control →
+   daemon`). Carry-forwards routed by plan 06 §7: subsystem 9 (daemon) inherits the
+   outcome-persist policy (SUCCESS sets the column; FAILURE and **SKIPPED** quarantine, ADR-0004
+   d.4), the `next_gate is None` completion stamp + persist-then-emit (B9), and the
+   `backtrack`/`fastforward` question; subsystem 8 (control) inherits the per-run exclusion op
+   (ADR-0004 d.3) and the same routed question.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
