@@ -1,6 +1,6 @@
 # sluice — Handoff & Compaction Record
 
-**Updated:** 2026-07-28 (macOS session — reconcile committed, 6 of 9 done; **ADR-0004 binary contracts executed in code**; next: audit — see §10 item 3g)
+**Updated:** 2026-07-28 (macOS session — audit committed, 7 of 9 done; the §9 control-op choreography is now landed contract; next: control — see §10 item 3h)
 **Purpose:** The single file to read when resuming this project — across sessions, across the two
 environments, and across context compaction. If a summary ever replaces the live conversation, start
 here.
@@ -28,13 +28,14 @@ LabKey register). The **architecture is approved** (design of record). The **tra
 designed and — on macOS — now EXECUTED**: the repo skeleton, config schema, CI, lockfile, and the
 dependency-arrow guard test all exist and `pixi run test` is green.
 
-**Plan A is 6 of 9 subsystems built, committed, and green (24 commits on `main`, none pushed —
-no remote configured).** db, gate, events, context, profile, reconcile are done; `pixi run test` →
-304 passed, lint clean. **ADR-0004 (binary contracts) is executed in code:** the profile vocabulary
-is now `required|disabled` — a run's contract is binary, every contract gate mandatory, excluded
-gates absent; there is no runtime optional tier. Remaining Plan A: audit → control → daemon. Then
-Plan B (production gates) → Plan C (API + CLI). python-poller keeps running untouched throughout;
-sluice stays observe-only until Plan A+B reach parity.
+**Plan A is 7 of 9 subsystems built, committed, and green (27 commits on `main`, none pushed —
+no remote configured).** db, gate, events, context, profile, reconcile, audit are done;
+`pixi run test` → 321 passed, lint clean. **ADR-0004 (binary contracts) is executed in code:** the
+profile vocabulary is now `required|disabled` — a run's contract is binary, every contract gate
+mandatory, excluded gates absent; there is no runtime optional tier. **The §9 control-op
+choreography (mutate → audit → commit → event) is landed as audit's binding contract.** Remaining
+Plan A: control → daemon. Then Plan B (production gates) → Plan C (API + CLI). python-poller keeps
+running untouched throughout; sluice stays observe-only until Plan A+B reach parity.
 
 ---
 
@@ -220,10 +221,10 @@ From the errata. None block the bootstrap.
 
 ### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-28
 
-**Bootstrap + db + gate + events + context + profile + reconcile subsystems: complete and
-committed — 6 of 9 Plan A subsystems are green. `pixi run test` → 304 passed (Python 3.14.6,
+**Bootstrap + db + gate + events + context + profile + reconcile + audit subsystems: complete and
+committed — 7 of 9 Plan A subsystems are green. `pixi run test` → 321 passed (Python 3.14.6,
 pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard green
-(auto-covering `sluice.core.reconcile`).**
+(auto-covering `sluice.core.audit`).**
 
 - `git init` on `main` — ✅ **initial commit exists:** `638b7482` *(bootstrap: repo skeleton,
   config schema, CI, guardrails, db unit work)*, 24 files, on `main`, not pushed. db units 1–3
@@ -376,6 +377,35 @@ pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard 
     ⚑1 as moot. Suite 253 → 304 passed.
   - `a52940f` *(docs: add reconcile plan (06) — ADR-0004 rewrite, all flags stamped)* — the
     reviewed plan, tracked via the plans allowlist.
+- ✅ **audit subsystem (7 of 9) complete and committed** 2026-07-28 on `main`, not pushed
+  (plan: `docs/superpowers/plans/07-audit-plan.md` — 3 units, reviewed per-unit; both ⚑ flags
+  decided by the user 2026-07-28, **both against the plan's recommendation**, reasoning preserved
+  in the sign-off stamps). Two commits (plus this handoff commit):
+  - `bccd6f8` *(audit: append-only control_audit writer record_control_action)* —
+    `sluice/core/audit.py` (`record_control_action(conn, *, actor, action, target_run=None,
+    args=None, result=None, ts=None) -> int` — the caller owns the connection and transaction:
+    the writer never opens, commits, or rolls one back; imports closed to
+    `json`/`sqlite3`/`collections.abc` + exactly `now_iso` from db, so
+    `get_connection`/`write_txn` are structurally unreachable; `args_json` via
+    `sort_keys=True`/`ensure_ascii=False`/`allow_nan=False`/no `default=` hook behind a
+    recursive str-keys-only walk — loud `TypeError`/`ValueError` at any depth, nothing silently
+    rewritten or truncated; blank actor/action refused; `ts` defaults to `db.now_iso`) and
+    `tests/test_audit.py` (10 test functions across 3 units: the writer contract,
+    order-by-`id`-never-`ts` incl. the NTP step-back wall-clock lie, the
+    never-commits/rollback probes, the §9 state+audit atomicity choreography both directions
+    over the real schema, run-deletion survival — `target_run` is a name, no FK — and the
+    `__all__`/no-mutation-surface guard, THE append-only enforcement per ⚑1). Resolves the
+    plan-01 §1 deferral ("Writing control_audit rows — subsystem 7"). Suite 304 → 321 passed.
+  - `a549269` *(docs: add audit plan (07) — writer only, both flags stamped)* — the reviewed
+    plan (three confirmed review findings applied), tracked via the plans allowlist. ⚑1: no
+    migration 006, no DB-level append-only triggers — code promise only, the ladder stays at
+    005 (a `BEFORE DELETE` trigger could not coexist with the db suite's executable
+    AUTOINCREMENT delete-then-insert proof); Plan B's gate columns take 006+. ⚑2: no reader —
+    deferred to Plan C with its first caller (`sluice audit`), the ORDER BY `id` rule a named
+    carry-forward.
+  - Errata note: `specs/sluice-spec-errata.md` (gitignored with the other specs — this working
+    copy only) gained **§F** — the F-ADR4 record that ADR-0004 supersedes the affected spec
+    passages.
 - ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **four** ADRs:
   `0001-docstring-standard.md`, `0002-gate-failure-and-persistence.md` (all failures quarantine;
   gates never write run state), `0003-core-import-policy.md` (structlog allowed in core;
@@ -384,7 +414,7 @@ pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard 
   exclusion via the subsystem-8 op; trait-based contract construction is Plan B's) — plus
   `.claude/CLAUDE.md`, the amended `.claude/agents/*.md`
   (implementer/test-author/code-reviewer/docs-builder now enforce ADR-0001), and the
-  `docs/dev-cycle/` artifacts (`01-db/` through `05-profile/`, with **`06-reconcile/` being
+  `docs/dev-cycle/` artifacts (`01-db/` through `06-reconcile/`, with **`07-audit/` being
   generated now** — untracked like their siblings) are all still behind the deny-all
   allowlist `.gitignore` — the human curates the allowlist. **Standing open item:** no allowlist
   rule for `docs/adr/` yet, so ADR-0001/0002/0003/0004 exist only in this working copy while code
@@ -576,6 +606,26 @@ actually protected.
    d.4), the `next_gate is None` completion stamp + persist-then-emit (B9), and the
    `backtrack`/`fastforward` question; subsystem 8 (control) inherits the per-run exclusion op
    (ADR-0004 d.3) and the same routed question.
+3h. ✅ **audit subsystem built and committed** 2026-07-28 (`bccd6f8`, `a549269`, and this
+   handoff commit on `main`, not pushed; see §9). Subsystem 7 complete: 3 units, reviewed
+   per-unit, 304 → 321 tests green; both ⚑ flags decided by the user 2026-07-28, both against
+   the plan's recommendation, reasoning preserved in the stamps (⚑1 — no DB append-only
+   triggers, code promise only enforced by the unit-3 surface guard, ladder stays at 005; ⚑2 —
+   no reader, deferred to Plan C with its first caller `sluice audit`). The errata gained **§F**
+   (F-ADR4: the ADR-0004 supersession record; file gitignored with the specs). **Plan A now
+   7 of 9 subsystems done — db, gate, events, context, profile, reconcile, audit all committed
+   and green.**
+   Standing items unchanged: `docs/adr/` holds FOUR gitignored ADRs (the 3a allowlist item),
+   `docs/dev-cycle/` untracked (incl. the `07-audit/` artifacts being generated now), no git
+   remote configured; CHTC drift since 2026-07-17 (§2/§3) still unresolved.
+   **Next: plan `control` (subsystem 8)** via the §9a loop (`… → audit → control → daemon`).
+   It implements the choreography this subsystem defined — one `write_txn` per op: validate →
+   mutate → `record_control_action` → commit → `control_event` — plus the per-run exclusion op
+   as remediation (ADR-0004 d.3), `set_gate`'s B2 fabrication refusal, `reset_gate`'s
+   experiment-gate protection, and the routed `backtrack`/`fastforward` question; it also
+   decides the plan-07 §6 recommendations left to it (refused-op auditing on an autocommit
+   connection, `get_status` writes no audit row, the `result` string vocabulary). No
+   `reset_attempts` op exists, ever (ADR-0002).
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
