@@ -2,9 +2,11 @@
 
 A profile is the ordered gate set plus per-gate applicability for a
 ``pipeline_version`` (design §8). Applicability is policy and lives here, never
-on the gate (design §4); the vocabulary is deliberately closed at three, because
-the closed set is itself the B1/B4 surface — no fourth applicability tier and no
-retry tier may creep in (plan 05 §2 B4, ADR-0002).
+on the gate (design §4); the vocabulary is deliberately closed at two, because
+a run's contract is binary — in and mandatory, or out and absent (ADR-0004
+decision 2) — and the closed set is itself the B1/B4 surface: no further
+applicability member and no retry member may creep in (plan 05 §2 B4,
+ADR-0002).
 """
 
 import ast
@@ -16,14 +18,15 @@ import sys
 import pytest
 
 
-def test_applicability_vocabulary_is_the_spec_three():
-    """``Applicability`` is exactly REQUIRED/OPTIONAL/DISABLED with the §8 string values.
+def test_applicability_vocabulary_is_the_binary_two():
+    """``Applicability`` is exactly REQUIRED/DISABLED with the §8 string values (ADR-0004).
 
-    Equality, not subset (plan 05 unit 1): the three members are the §8
-    vocabulary, and the *closed* set is load-bearing — a fourth applicability
-    (a retry tier, a "paused" state) would widen the B1/B4 surface without an
-    ADR. The string values are what profiles and reconcile speak, so they are
-    pinned alongside the names.
+    Equality, not subset: a run's contract is binary — a gate is in the
+    contract and mandatory, or out and absent (ADR-0004 decision 2), so the
+    closed two-member set *is* the decision's surface. A third tier (optional,
+    retry, a "paused" state) can only return via a conscious edit of this test
+    plus a new ADR. The string values are what profiles and reconcile speak,
+    so they are pinned alongside the names.
     """
     # Local import: profile is the module under construction; a module-level
     # import would fail collection for every other test in this file.
@@ -31,7 +34,6 @@ def test_applicability_vocabulary_is_the_spec_three():
 
     assert {member.name: member.value for member in Applicability} == {
         "REQUIRED": "required",
-        "OPTIONAL": "optional",
         "DISABLED": "disabled",
     }
 
@@ -443,7 +445,7 @@ def test_build_profile_splits_pairs_into_gates_and_applicability():
 
     profile = build_profile(
         "reference-v1",
-        [(MOCK_ALPHA, Applicability.REQUIRED), (MOCK_BETA, Applicability.OPTIONAL)],
+        [(MOCK_ALPHA, Applicability.REQUIRED), (MOCK_BETA, Applicability.DISABLED)],
     )
     assert profile.pipeline_version == "reference-v1"
     assert profile.gates == (MOCK_ALPHA, MOCK_BETA)
@@ -451,7 +453,7 @@ def test_build_profile_splits_pairs_into_gates_and_applicability():
     # OWN gate id — a splitter that zipped them wrong would swap the two.
     assert dict(profile.applicability) == {
         "mock_alpha": Applicability.REQUIRED,
-        "mock_beta": Applicability.OPTIONAL,
+        "mock_beta": Applicability.DISABLED,
     }
 
 
@@ -487,34 +489,30 @@ def test_build_profile_rejects_a_duplicate_gate():
 @pytest.mark.parametrize(
     ("alpha_applicability_name", "beta_applicability_name", "expected_gate_ids"),
     [
-        # An OPTIONAL gate runs when due but does NOT block completion (§8),
-        # so it is excluded from the required subset.
-        pytest.param("REQUIRED", "OPTIONAL", ("mock_alpha",), id="optional-excluded"),
         # Both required → both returned, in EXECUTION order (the order
         # validate_gates stored, not any authoring order).
         pytest.param(
             "REQUIRED", "REQUIRED", ("mock_alpha", "mock_beta"), id="both-required"
         ),
-        # A DISABLED gate is treated as already-satisfied (§8/B1): it is not
-        # required, so it can never block completion — the B1 fix for the
-        # nvd_auto_run=false loop-forever bug (PP poller.py:1229-1237).
+        # A DISABLED gate is out of the contract — satisfied by absence
+        # (ADR-0004 d.2), so it can never block completion — the B1 fix for
+        # the nvd_auto_run=false loop-forever bug (PP poller.py:1229-1237).
         pytest.param("DISABLED", "REQUIRED", ("mock_beta",), id="disabled-excluded"),
     ],
 )
 def test_required_gates_returns_only_required_in_order(
     alpha_applicability_name, beta_applicability_name, expected_gate_ids
 ):
-    """``required_gates`` returns exactly the REQUIRED subset, in execution order.
+    """``required_gates`` returns exactly the contract — the REQUIRED subset — in execution order.
 
-    The completion-predicate seam (plan 05 unit 4 / §3.3): reconcile's
-    "complete" is ``all(row[g.satisfied_column] for g in
-    required_gates(profile))``, so what this function returns *is* the set of
-    gates that can block completion. The regressions this catches: an
-    implementation that includes OPTIONAL gates would make an undone optional
-    block completion (violating §8 "runs when due but does not block");
-    one that includes DISABLED gates would resurrect the B1 loop-forever bug
-    (a disabled gate's column stays 0 forever, so the run never completes);
-    and one that loses execution order would hand reconcile an unordered seam.
+    The completion-predicate seam (plan 05 unit 4 / §3.3, amended by
+    ADR-0004): reconcile's "complete" is ``all(row[g.satisfied_column] for g
+    in required_gates(profile))``, so what this function returns *is* the set
+    of gates that can block completion. The regressions this catches: an
+    implementation that includes DISABLED gates would resurrect the B1
+    loop-forever bug (a disabled gate's column stays 0 forever, so the run
+    never completes); and one that loses execution order would hand reconcile
+    an unordered seam.
     """
     # Local imports: required_gates is the unit under construction; a
     # module-level import would fail collection for every other test here.
@@ -534,24 +532,23 @@ def test_required_gates_returns_only_required_in_order(
 @pytest.mark.parametrize(
     "uniform_applicability_name",
     [
-        pytest.param("OPTIONAL", id="all-optional"),
         pytest.param("DISABLED", id="all-disabled"),
     ],
 )
-def test_required_gates_is_empty_for_an_all_optional_profile(
+def test_required_gates_is_empty_for_an_all_disabled_profile(
     uniform_applicability_name,
 ):
     """A profile with no REQUIRED gate yields ``required_gates(profile) == ()`` — the vacuous-completion edge.
 
-    Plan 05 unit 4 / §3.3: an all-optional (and, separately, all-disabled)
-    profile has an empty required subset, so reconcile's completion predicate
+    Plan 05 unit 4 / §3.3, amended by ADR-0004: an all-disabled profile has an
+    empty contract, so reconcile's completion predicate
     ``all(row[g.satisfied_column] for g in required_gates(profile))`` is
     ``all([])`` — vacuously true, the run complete at detection. That edge is
     real and legitimate, and this test pins it as a *fact reconcile must
     handle* (§7 carry-forward), not an accident. The regression it catches: a
-    defensive implementation that treats an empty required subset as an
-    authoring error — falling back to every gate, or raising — would turn a
-    deliberately all-optional profile into one whose gates silently block
+    defensive implementation that treats an empty contract as an authoring
+    error — falling back to every gate, or raising — would turn a
+    deliberately all-disabled profile into one whose gates silently block
     completion after all.
     """
     # Local imports: required_gates is the unit under construction; a
@@ -594,7 +591,7 @@ def test_load_profile_resolves_by_version_string():
     )
     other = build_profile(
         "other-v1",
-        [(MOCK_ALPHA, Applicability.OPTIONAL), (MOCK_BETA, Applicability.OPTIONAL)],
+        [(MOCK_ALPHA, Applicability.DISABLED), (MOCK_BETA, Applicability.REQUIRED)],
     )
     registry = {"reference-v1": reference, "other-v1": other}
 
@@ -740,8 +737,8 @@ def test_reference_profile_covers_the_two_mock_gates_both_required():
     assert REFERENCE_PROFILE.pipeline_version == "reference-v1"
     assert REFERENCE_PROFILE.gates == MOCK_GATES
     # Both mock gates REQUIRED: the reference run completes only when both
-    # have actually run to success (§12) — an optional/disabled slip here
-    # would let the end-to-end proof pass with a gate never executed.
+    # have actually run to success (§12) — a disabled slip here would let
+    # the end-to-end proof pass with a gate never executed.
     assert required_gates(REFERENCE_PROFILE) == MOCK_GATES
 
 
@@ -758,9 +755,8 @@ def test_reference_disabled_variant_keeps_the_disabled_gate_in_the_set():
     (alpha's column stays 0 forever), and completion is beta-only —
     ``required_gates`` excluding the disabled gate is the B1 fix for the
     nvd_auto_run=false loop-forever bug (PP ``poller.py:1229-1237``). The
-    regression this catches: a variant that omits alpha, marks it merely
-    OPTIONAL (which would not prove needs-unblocking-from-applicability), or
-    lets it leak into the required subset (which would resurrect loop-forever).
+    regression this catches: a variant that omits alpha, or one that lets it
+    leak into the required subset (which would resurrect loop-forever).
     """
     # Local imports: REFERENCE_PROFILE_ALPHA_DISABLED is the unit under
     # construction; a module-level import would fail collection for every

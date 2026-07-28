@@ -152,8 +152,8 @@ def test_gate_contract_fields_are_exactly_the_spec_ten():
 
     This one equality carries three errata (plan 02 unit 3): no
     ``retryable``/``max_attempts`` (B4 — ADR-0002 quarantines every failure),
-    no applicability field (§4 — required/optional/disabled lives in the
-    profile, subsystem 5), and no ``timeout_seconds`` (B6 — deferred until the
+    no applicability field (§4 — required/disabled lives in the profile,
+    ADR-0004, subsystem 5), and no ``timeout_seconds`` (B6 — deferred until the
     change that builds its enforcement). ``needs`` and ``produces`` have NO
     default: a gate author must state dependencies explicitly, because a
     silently-defaulted ``needs=()`` is the B3 deadlock's cousin. Editing this

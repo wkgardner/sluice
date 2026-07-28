@@ -33,15 +33,15 @@ __all__ = [
 class Applicability(enum.Enum):
     """Closed vocabulary for how a gate applies within a profile.
 
-    Exactly these three members, by design (§8): the values are the strings
-    profiles and reconcile speak, and the closed set is the B1/B4 surface —
-    no fourth applicability and no retry tier may be added without a new ADR
-    (ADR-0002).
+    Exactly these two members, by design (ADR-0004 decision 2): a run's
+    contract is binary — a gate is in the contract and mandatory, or out and
+    absent. The values are the strings profiles and reconcile speak, and the
+    closed set is the B1/B4 surface — no further applicability and no retry
+    member may be added without a new ADR (ADR-0002).
     """
 
-    REQUIRED = "required"  # must be satisfied for the run to be complete (§7/§8)
-    OPTIONAL = "optional"  # runs when due, but does NOT block completion (§8)
-    DISABLED = "disabled"  # treated as already-satisfied; never runs, never blocks (§8)
+    REQUIRED = "required"  # in the contract — mandatory (ADR-0004 d.1)
+    DISABLED = "disabled"  # out of the contract — satisfied by absence (ADR-0004 d.2)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -213,17 +213,18 @@ def load_profile(pipeline_version: str, registry: Mapping[str, Profile]) -> Prof
 
 
 def required_gates(profile: Profile) -> tuple[Gate, ...]:
-    """Return the profile's REQUIRED gates, in execution order.
+    """Return the contract — every non-disabled gate, in execution order.
 
-    The completion-predicate seam (plan 05 §3.3): reconcile's "complete" is
-    ``all(row[g.satisfied_column] for g in required_gates(profile))``, so this
-    subset is exactly the gates that can block completion — OPTIONAL runs when
-    due but never blocks, and DISABLED is treated as already-satisfied (§8/B1,
-    the fix for the nvd_auto_run=false loop-forever bug). A pure function of
-    the profile alone, no run row; ``profile.gates`` is already ascending by
-    ``Gate.order`` (``validate_gates`` in ``Profile.__post_init__``), so the
-    filtered tuple preserves execution order, and the ``applicability`` lookup
-    never misses for a gate in ``profile.gates`` (§3.1 exact coverage).
+    The completion-predicate seam (plan 05 §3.3, amended by ADR-0004):
+    reconcile's "complete" is ``all(row[g.satisfied_column] for g in
+    required_gates(profile))``, so this subset is exactly the gates that can
+    block completion — DISABLED is out of the contract, satisfied by absence
+    (ADR-0004 d.2 / B1, the fix for the nvd_auto_run=false loop-forever bug).
+    A pure function of the profile alone, no run row; ``profile.gates`` is
+    already ascending by ``Gate.order`` (``validate_gates`` in
+    ``Profile.__post_init__``), so the filtered tuple preserves execution
+    order, and the ``applicability`` lookup never misses for a gate in
+    ``profile.gates`` (§3.1 exact coverage).
     """
     return tuple(
         gate
