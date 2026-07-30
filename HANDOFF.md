@@ -28,17 +28,19 @@ LabKey register). The **architecture is approved** (design of record). The **tra
 designed and — on macOS — now EXECUTED**: the repo skeleton, config schema, CI, lockfile, and the
 dependency-arrow guard test all exist and `pixi run test` is green.
 
-**Plan A is 8 of 9 subsystems built, committed, and green (30 commits on `main`, none pushed —
-no remote configured).** db, gate, events, context, profile, reconcile, audit, control are done;
-`pixi run test` → 394 passed, lint clean. **ADR-0004 (binary contracts) is executed in code:** the
-profile vocabulary is `required|disabled` — a run's contract is binary, every contract gate
-mandatory, excluded gates absent; there is no runtime optional tier — and control's
-`exclude_gate` op is the remediation-is-exclusion mechanism (d.3). **ADR-0005 is recorded:** no
-automatic file deletion — operators own destructive filesystem actions; rewinds
-(`reset_gate`/`backtrack`/`reset`) are column-clear only; `invalidate` dormant; B7 reap frozen
-pending sign-off. The migration ladder is at **006** (`excluded_gates`). Remaining Plan A:
-daemon. Then Plan B (production gates) → Plan C (API + CLI). python-poller keeps running
-untouched throughout; sluice stays observe-only until Plan A+B reach parity.
+**PLAN A IS COMPLETE — all nine subsystems built, committed, and green (33 commits on `main`,
+none pushed — no remote configured; tagged `plan-a-rc1`).** db, gate, events, context, profile,
+reconcile, audit, control, daemon are done; `pixi run test` → 435 passed, lint clean. **ADR-0004
+(binary contracts) is executed in code:** the profile vocabulary is `required|disabled` — a run's
+contract is binary, every contract gate mandatory, excluded gates absent; there is no runtime
+optional tier — and control's `exclude_gate` op is the remediation-is-exclusion mechanism (d.3).
+**ADR-0005 is executed:** no automatic file deletion — operators own destructive filesystem
+actions; rewinds (`reset_gate`/`backtrack`/`reset`) are column-clear only; `invalidate` dormant
+(the daemon never calls it, ast-pinned); B7 reap frozen pending sign-off. **B9 is closed:** both
+canonical `run.finished` emission points (completion and quarantine) are live in the daemon. The
+migration ladder is at **006** (`excluded_gates`). Next: Plan B (production gates) → Plan C
+(API + CLI). python-poller keeps running untouched throughout; sluice stays observe-only until
+Plan A+B reach parity.
 
 ---
 
@@ -222,12 +224,13 @@ From the errata. None block the bootstrap.
 
 ## 9. Current status — what physically exists
 
-### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-29
+### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-30
 
-**Bootstrap + db + gate + events + context + profile + reconcile + audit + control subsystems:
-complete and committed — 8 of 9 Plan A subsystems are green. `pixi run test` → 394 passed
-(Python 3.14.6, pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard
-green (auto-covering `sluice.core.control`).**
+**PLAN A COMPLETE — all nine subsystems (db, gate, events, context, profile, reconcile, audit,
+control, daemon) complete, committed, and green. `pixi run test` → 435 passed (Python 3.14.6,
+pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard green
+(auto-covering `sluice.core.daemon`). The final commit is tagged `plan-a-rc1` (annotated) —
+release candidate pending Plan B production gates.**
 
 - `git init` on `main` — ✅ **initial commit exists:** `638b7482` *(bootstrap: repo skeleton,
   config schema, CI, guardrails, db unit work)*, 24 files, on `main`, not pushed. db units 1–3
@@ -433,6 +436,34 @@ green (auto-covering `sluice.core.control`).**
   - `8645689` *(docs: add control plan (08) — lightweight mode, all flags stamped)* — ⚑1
     backtrack/fastforward approved as amended by ADR-0005; ⚑2 exclusion op approved
     (migration 006); ⚑3 quiescence superseded by ADR-0005, residual posture recorded.
+- ✅ **daemon subsystem (9 of 9) complete and committed — PLAN A COMPLETE** 2026-07-30 on
+  `main`, not pushed (plan: `docs/superpowers/plans/09-daemon-plan.md` — lightweight mode:
+  one-pass build + single adversarial review, APPROVE with two test-only fixes applied; both
+  ⚑ flags APPROVED by the user 2026-07-29). Two commits (plus this handoff commit, which
+  carries the annotated tag `plan-a-rc1`):
+  - `e5d4c6b` *(daemon: reconcile loop — detect, drive-until-blocked, cycle, logging)* —
+    `sluice/core/daemon.py` (`acquire_daemon_lock` — single-instance is the flock alone, the
+    A3 lesson; `assemble_registry` — duplicate-key-loud registry union; `prepare_database` —
+    migrate + seed/validate `metadata.pipeline_profile`, a bad active default is one startup
+    error; `detect_new_runs` — single-txn detection, the ONLY read site of the active default
+    for a run; `process_run` — the full outcome matrix, drive-until-blocked per ⚑2, every
+    step a stateless re-derivation, §3.5 call-site-scoped isolation catches (contract/context
+    resolution quarantines ONE run; reconcile's schema-drift `KeyError` and persist
+    `OperationalError` stay fatal), persist-then-emit, SKIPPED-in-contract quarantines per
+    ADR-0004 d.4; `run_cycle` — loop-head pause short-circuit, B5 disk-floor auto-pause trio
+    per ⚑1 (audited `control.pause` actor `"daemon"` — the ONE sanctioned daemon→control
+    call — operator-resume only, check fail-open); `run_forever` — flag-only signal handlers,
+    interruptible sleep, `max_cycles`, systemd-ready; `configure_logging` — ISO-UTC structlog
+    jsonl, rotating events sink + per-run `run_events_dir/<run.name>.jsonl` routing behind
+    the safe-path-component guard). Imports a closed set pinned by ast parse —
+    `subprocess`/`shutil`/`slack_sdk` forbidden by name; no file deletion, no `invalidate`
+    (ADR-0005). **Closes B9** — both canonical `run.finished` emission points live. Plus
+    `tests/test_daemon.py` (41 tests incl. the five `run_cycle` capstones and the two review
+    fixes), the pre-authorized one-line F-ADR4 SKIPPED-comment sweep in `sluice/core/gate.py`,
+    and `config.example.json` (`watch_dir` added; `folder_events_dir` → `run_events_dir`).
+    Suite 394 → 435 passed.
+  - `289f7c6` *(docs: add daemon plan (09) — lightweight mode, both flags stamped)* — the
+    reviewed plan, READY TO BUILD, tracked via the plans allowlist.
 - ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **FIVE** ADRs:
   `0001-docstring-standard.md`, `0002-gate-failure-and-persistence.md` (all failures quarantine;
   gates never write run state), `0003-core-import-policy.md` (structlog allowed in core;
@@ -450,7 +481,8 @@ green (auto-covering `sluice.core.control`).**
   while code commits cite them by name.
 - `pixi.toml` (name `sluice`, `platforms = ["linux-64", "osx-arm64"]`, deps: python 3.14 / pytest 9 /
   structlog) + `pixi.lock` (solved with pixi 0.72.1).
-- `config.example.json` — ~68 keys, **placeholders only**, `slack_bot_token` deliberately omitted.
+- `config.example.json` — ~69 keys (now incl. `watch_dir`; `folder_events_dir` renamed
+  `run_events_dir`), **placeholders only**, `slack_bot_token` deliberately omitted.
 - `.github/workflows/test.yml` — hermetic `pixi run test`, `locked: true`, pinned `pixi-version: v0.72.1`.
 - `tests/test_dependency_arrows.py` — the arch guard; installs a `sys.meta_path` blocker and imports
   every `sluice.core` module with `gates`/`api`/`cli` forbidden. **Verified it actually fails** on an
@@ -679,6 +711,24 @@ actually protected.
    ADR-0004 d.4), the `next_gate is None` completion stamp + persist-then-emit (B9), and the
    per-run contract composition `apply_exclusions(load_profile(...), run_exclusions(row))`
    (plan 08 §6).
+3j. ✅ **daemon subsystem built and committed — PLAN A COMPLETE** 2026-07-30 (`e5d4c6b`,
+   `289f7c6`, and this handoff commit on `main`, not pushed; see §9). Subsystem 9 complete:
+   lightweight mode (one-pass build + single adversarial review, APPROVE with two test-only
+   fixes applied), both ⚑ flags APPROVED 2026-07-29 (⚑1 — B5 disk-floor auto-pause via
+   audited `control.pause` actor `"daemon"`, operator-resume only; ⚑2 — drive-until-blocked),
+   394 → 435 tests green. **B9 closed** — both canonical `run.finished` emission points live.
+   **All nine Plan A subsystems are built, committed, and green; this handoff commit is
+   tagged `plan-a-rc1`** (annotated) — release candidate pending Plan B production gates.
+   **Next horizon: Plan B (production gates).** The standing items are now the front line:
+   - **No git remote** — the entire Plan A history exists on one machine (the real fix for
+     the sync problem too; see item 4).
+   - **FIVE gitignored ADRs** (`docs/adr/0001`–`0005`) that the commits cite by name but
+     history does not contain (the 3a allowlist decision).
+   - `docs/dev-cycle/` untracked (`01-db/` through `07-audit/`; none for 08/09 — visual docs
+     optional in lightweight mode).
+   - **CHTC drift since 2026-07-17** (§2/§3) still unresolved.
+   - Plan B carry-forwards: `invalidate`'s fate (dormant per ADR-0005), B7 reap sign-off
+     (frozen), and the config-key fatal-class revisit raised in the daemon review.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
