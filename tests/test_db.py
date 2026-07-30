@@ -1077,18 +1077,19 @@ def test_index_migration_applies_to_a_pre_existing_database(tmp_path, monkeypatc
         assert row["pipeline_version"] == "reference-v1"
 
 
-def test_all_five_migrations_yield_version_five_and_every_object(tmp_path):
-    """The full ladder's end state: version 5, all tables and the index present.
+def test_all_six_migrations_yield_version_six_and_every_object(tmp_path):
+    """The full ladder's end state: version 6, all tables and the index present.
 
     Migration 005 (mock gate columns) is subsystem 2's, appended per plan 02
-    §3.5. The end-state literal stays hardcoded — generalizing to
+    §3.5; 006 (``excluded_gates``) is subsystem 8's, appended per plan 08
+    unit 9 (⚑2). The end-state literal stays hardcoded — generalizing to
     ``max(MIGRATIONS)`` would pin nothing; this test is edited consciously each
     time the ladder grows. ``initialize_database`` on a fresh path reaches
-    ``schema_version == 5`` with ``schema_migrations``, ``runs``,
+    ``schema_version == 6`` with ``schema_migrations``, ``runs``,
     ``poller_metadata``, ``control_audit`` and ``idx_runs_eligible`` all created.
     """
     with initialized_connection(tmp_path / "state.db") as connection:
-        assert sluice.core.db.schema_version(connection) == 5
+        assert sluice.core.db.schema_version(connection) == 6
 
         tables = {
             row["name"]

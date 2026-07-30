@@ -230,16 +230,35 @@ def _migration_005_mock_gate_columns(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_006_excluded_gates(conn: sqlite3.Connection) -> None:
+    """Add the per-run exclusion overlay column to ``runs`` (plan 08 ⚑2 / ADR-0004 d.3).
+
+    Owned by subsystem 8 (control), living in this ladder per the same
+    F3-revision precedent as 005. NULL means "no exclusions" — never ``'[]'``
+    (no-fabrication), and pre-existing rows correctly land NULL because
+    nothing was ever excluded from them; otherwise a sorted, deduplicated
+    JSON array of gate ids written only by ``exclude_gate``/``include_gate``.
+    The CHECK admits NULL or valid JSON; the array *shape* is enforced
+    fail-loud by ``control.run_exclusions``, the sole parse site.
+    """
+    conn.execute(
+        "ALTER TABLE runs ADD COLUMN excluded_gates TEXT "
+        "CHECK (excluded_gates IS NULL OR json_valid(excluded_gates))",
+    )
+
+
 # (version, name, apply_fn) each. The framework (unit 4) runs each apply_fn in its
 # own BEGIN IMMEDIATE/COMMIT and records the version only on success, so the
 # apply_fns issue plain DDL and touch neither the transaction nor the ledger.
-# Later subsystems append 006+; a shipped migration is never edited.
+# Later subsystems append 007+ (Plan B's production gate columns — plan 08 §2,
+# F-AUD1 superseded); a shipped migration is never edited.
 MIGRATIONS: tuple[Migration, ...] = (
     (1, "001_runs", _migration_001_runs),
     (2, "002_poller_metadata", _migration_002_poller_metadata),
     (3, "003_control_audit", _migration_003_control_audit),
     (4, "004_idx_runs_eligible", _migration_004_idx_runs_eligible),
     (5, "005_mock_gate_columns", _migration_005_mock_gate_columns),
+    (6, "006_excluded_gates", _migration_006_excluded_gates),
 )
 
 
@@ -495,9 +514,10 @@ def get_metadata(
 def set_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
     """Upsert ``key`` → ``value`` in ``poller_metadata``.
 
-    One autocommit upsert (insert or replace, no duplicate, no ``IntegrityError``
-    on a repeat). The connection is autocommit (F2), so this leaves no open
-    transaction — do not wrap it in ``write_txn``. Key-agnostic like
+    One plain upsert statement (insert or replace, no duplicate, no
+    ``IntegrityError`` on a repeat) that needs no transaction of its own (F2);
+    callers may batch it inside ``write_txn`` — control does, so a metadata
+    write and its audit row land atomically (plan 08 F7). Key-agnostic like
     ``get_metadata``.
     """
     conn.execute(
