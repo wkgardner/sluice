@@ -827,6 +827,95 @@ def test_reference_registry_is_keyed_by_pipeline_version():
 
 
 # --------------------------------------------------------------------------
+# plan 08 unit 10 — ``apply_exclusions``: the per-run contract overlay (⚑2).
+# Additive per the pre-authorized edit list; behavior lives with its module.
+# --------------------------------------------------------------------------
+
+
+def test_apply_exclusions_overlays_disabled_preserving_the_gate_set():
+    """``apply_exclusions`` flips the named gate to DISABLED while keeping the SAME gates tuple, the same ``pipeline_version``, and the input profile unmutated.
+
+    The ⚑2 overlay's whole design (plan 08 §2 / ADR-0004): a per-run
+    exclusion cannot edit the frozen shared profile, so it returns a NEW
+    Profile whose gates tuple is unchanged — needs-closure intact, because
+    beta's ``needs=("mock_alpha",)`` must still resolve when alpha is
+    excluded (a disabled gate satisfies dependents' needs by absence,
+    ADR-0004 d.2) — with only the applicability overlaid. Three mutants
+    killed: an overlay that REMOVES the gate from the tuple (beta's need
+    dangles, ``validate_gates`` would raise — or worse, silently reorder);
+    one that mints a new ``pipeline_version`` (violating §8's stamp-once
+    freeze — the exclusion is an overlay on the run's stamped contract,
+    never a new version); and one that mutates the input profile in place
+    (the shared registry entry would silently change for every OTHER run of
+    that version — the exact second-authority hazard the frozen Profile
+    exists to prevent).
+    """
+    from sluice.core.mock_gates import MOCK_BETA
+    from sluice.core.profile import (
+        REFERENCE_PROFILE,
+        Applicability,
+        apply_exclusions,
+        required_gates,
+    )
+
+    overlaid = apply_exclusions(REFERENCE_PROFILE, ("mock_alpha",))
+
+    assert overlaid.gates == REFERENCE_PROFILE.gates, (
+        "the overlay must preserve the SAME gates tuple — a disabled gate "
+        "stays in the set (disabling != omitting, ADR-0004 d.2) so "
+        "dependents' needs still resolve; got "
+        f"{[gate.id for gate in overlaid.gates]!r}"
+    )
+    assert overlaid.applicability["mock_alpha"] is Applicability.DISABLED, (
+        "the excluded gate's applicability must flip to DISABLED — that is "
+        "the entire overlay; got "
+        f"{overlaid.applicability['mock_alpha']!r}"
+    )
+    assert required_gates(overlaid) == (MOCK_BETA,), (
+        "the derived contract must shrink to the non-excluded gates — "
+        "required_gates is the completion predicate's input, so this IS the "
+        "resumption mechanism (ADR-0004 d.3); got "
+        f"{[gate.id for gate in required_gates(overlaid)]!r}"
+    )
+    assert overlaid.pipeline_version == REFERENCE_PROFILE.pipeline_version, (
+        "the overlay must keep the run's stamped pipeline_version — an "
+        "exclusion is never a new version (§8 stamp-once freeze); got "
+        f"{overlaid.pipeline_version!r}"
+    )
+    # The input profile is unmutated: the registry's shared entry must not
+    # have changed for every other run of this version.
+    assert REFERENCE_PROFILE.applicability["mock_alpha"] is Applicability.REQUIRED, (
+        "apply_exclusions must NOT mutate its input — the shared frozen "
+        "profile is the contract authority for every run stamped with this "
+        "version (plan 08 unit 10); got "
+        f"{REFERENCE_PROFILE.applicability['mock_alpha']!r}"
+    )
+
+
+def test_apply_exclusions_unknown_id_fails_loud_and_empty_is_identity():
+    """An unknown gate id raises ``ValueError`` naming it, and an empty exclusion set returns the profile object itself.
+
+    Both halves of the fail-loud/no-fabrication ethic (guardrail §8): a
+    typo'd exclusion silently ignored would leave the operator believing a
+    stuck run was remediated while the contract still blocks (the exact
+    silent fallback ADR-0004's exclusion path exists to avoid), and the
+    empty case must be identity (``is``, not merely ``==``) — the common
+    no-exclusions path allocates nothing and cannot drift from the stamped
+    profile by reconstruction.
+    """
+    from sluice.core.profile import REFERENCE_PROFILE, apply_exclusions
+
+    with pytest.raises(ValueError, match="no_such_gate"):
+        apply_exclusions(REFERENCE_PROFILE, ("no_such_gate",))
+
+    assert apply_exclusions(REFERENCE_PROFILE, ()) is REFERENCE_PROFILE, (
+        "an empty exclusion set must return the profile ITSELF — identity, "
+        "so the no-exclusions fast path is provably the stamped contract "
+        "(plan 08 unit 10)"
+    )
+
+
+# --------------------------------------------------------------------------
 # Unit 7 — subsystem-closing surface + real-``sqlite3.Row`` integration.
 #
 # Green-on-arrival by design (plan 05 §4; the plan-02 unit-9 carve-out
@@ -837,7 +926,7 @@ def test_reference_registry_is_keyed_by_pipeline_version():
 
 
 def test_profile_exports_exactly_the_documented_surface():
-    """``sluice.core.profile.__all__`` names exactly the plan §1 nine-name surface.
+    """``sluice.core.profile.__all__`` names exactly the ten-name surface (plan 05 §1 + plan 08 unit 10's ``apply_exclusions``).
 
     Makes §1's "``__all__`` names exactly the surface" executable, catching
     future scope creep in either direction — a production profile leaking into
@@ -864,6 +953,8 @@ def test_profile_exports_exactly_the_documented_surface():
         "REFERENCE_PROFILE",
         "REFERENCE_PROFILE_ALPHA_DISABLED",
         "REFERENCE_PROFILES",
+        # The per-run exclusion overlay (plan 08 unit 10, ADR-0004 d.3).
+        "apply_exclusions",
     }
     assert set(sluice.core.profile.__all__) == documented_surface
 

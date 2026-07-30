@@ -994,6 +994,10 @@ def test_gate_functions_leave_the_database_untouched(tmp_path):
         assert insert_run(connection, "r1", pipeline_version="reference-v1")
         row_snapshot = dict(get_run(connection, "r1"))
         metadata_snapshot = all_metadata(connection)
+        # Captured, not hardcoded (plan 08 unit 9's ladder-agnostic reword):
+        # the point is that GATES change no schema, which must keep holding
+        # however tall the migration ladder grows.
+        schema_version_snapshot = schema_version(connection)
 
         # One call from every gate-function class, across both mock gates,
         # including the quarantine-shaped outcome (scripted FAILURE).
@@ -1009,7 +1013,7 @@ def test_gate_functions_leave_the_database_untouched(tmp_path):
         # no schema change — gates returned results and touched the filesystem.
         assert dict(get_run(connection, "r1")) == row_snapshot
         assert all_metadata(connection) == metadata_snapshot
-        assert schema_version(connection) == 5
+        assert schema_version(connection) == schema_version_snapshot
 
 
 def test_loop_choreography_run_persist_quarantine_reset(tmp_path):

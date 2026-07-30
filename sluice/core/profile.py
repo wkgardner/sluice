@@ -24,6 +24,7 @@ __all__ = [
     "REFERENCE_PROFILES",
     "REFERENCE_PROFILE_ALPHA_DISABLED",
     "UnknownProfileError",
+    "apply_exclusions",
     "build_profile",
     "load_profile",
     "required_gates",
@@ -157,6 +158,45 @@ def build_profile(
         pipeline_version=pipeline_version,
         gates=gates,
         applicability=applicability,
+    )
+
+
+def apply_exclusions(profile: Profile, excluded_gate_ids: Iterable[str]) -> Profile:
+    """Return ``profile`` with the named gates' applicability flipped to ``DISABLED``.
+
+    The per-run contract overlay (plan 08 §2 ⚑2 / ADR-0004 d.3): the gates
+    tuple is the SAME object — needs-closure stays intact, because a disabled
+    gate satisfies dependents' needs by absence (ADR-0004 d.2) — and
+    ``pipeline_version`` is unchanged: an exclusion overlays the run's stamped
+    contract, never a new version (§8's freeze untouched). Empty
+    ``excluded_gate_ids`` returns ``profile`` itself. The daemon composes this
+    per run as ``apply_exclusions(load_profile(row["pipeline_version"],
+    registry), run_exclusions(row))`` (plan 08 §6).
+
+    Raises:
+        ValueError: an id in ``excluded_gate_ids`` names no gate of
+            ``profile``; the message names the offending id(s).
+    """
+    # Materialize once: the ids may be a one-shot iterable, and they are read
+    # for both the unknown-id check and the overlay.
+    excluded_ids = frozenset(excluded_gate_ids)
+    if not excluded_ids:
+        return profile
+    unknown_ids = sorted(excluded_ids - {gate.id for gate in profile.gates})
+    if unknown_ids:
+        raise ValueError(
+            f"cannot exclude unknown gate id(s) {unknown_ids} — profile "
+            f"{profile.pipeline_version!r} carries "
+            f"{sorted(gate.id for gate in profile.gates)}"
+        )
+    overlaid_applicability = {
+        gate_id: (Applicability.DISABLED if gate_id in excluded_ids else applicability)
+        for gate_id, applicability in profile.applicability.items()
+    }
+    return Profile(
+        pipeline_version=profile.pipeline_version,
+        gates=profile.gates,
+        applicability=overlaid_applicability,
     )
 
 
