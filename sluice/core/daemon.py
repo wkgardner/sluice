@@ -1,0 +1,811 @@
+"""The reconcile loop — the sole actor that composes every core module.
+
+Subsystem 9 of Plan A (design of record §7). The daemon adds almost no logic
+of its own: each look reads state, decides via ``reconcile``, runs one gate,
+persists the result **directly** (never through control ops — ADR-0002's two
+write paths; the daemon writes its own progress and never audits it, plan 07
+§6), then emits the canonical events every prior plan deferred here. The ONE
+sanctioned daemon→control call is B5 disk-floor ``pause`` (⚑1).
+
+Imports are a closed set (plan 09 §3.11): stdlib + ``structlog`` + the built
+``sluice.core`` modules only. ``subprocess``/``shutil``/``slack_sdk`` are
+forbidden by name, and nothing here deletes a file or calls ``invalidate``
+(ADR-0005) — ``tests/test_daemon.py`` pins both by ast parse. Short
+transactions only: a persist ``write_txn`` opens strictly *after* ``gate.run``
+returns, and every emit/notify is post-commit.
+"""
+
+import fcntl
+import json
+import logging
+import logging.handlers
+import pathlib
+import signal
+import threading
+import time
+import types
+from collections.abc import Callable, Mapping
+
+import structlog
+
+from sluice.core import control
+from sluice.core.context import resolve_context
+from sluice.core.db import (
+    get_connection,
+    get_metadata,
+    get_run,
+    initialize_database,
+    insert_run,
+    now_iso,
+    select_active_runs,
+    set_metadata,
+    update_run,
+    write_txn,
+)
+from sluice.core.events import emit_gate_event, emit_run_event, safe_notify
+from sluice.core.gate import GateOutcome, GateResult
+from sluice.core.profile import (
+    UnknownProfileError,
+    apply_exclusions,
+    load_profile,
+    required_gates,
+)
+from sluice.core.reconcile import is_complete, next_gate
+
+__all__ = [
+    "DaemonLockError",
+    "acquire_daemon_lock",
+    "assemble_registry",
+    "configure_logging",
+    "detect_new_runs",
+    "install_signal_handlers",
+    "prepare_database",
+    "process_run",
+    "run_cycle",
+    "run_forever",
+]
+
+# One module logger for the daemon's own vocabulary (plan 09 §3.10); the three
+# pinned lines (run.finished/gate.finished/control.finished) come only from
+# events.py/control.py — never rebuilt here.
+log = structlog.get_logger("sluice.daemon")
+
+
+class DaemonLockError(RuntimeError):
+    """A second sluice daemon tried to run against a lock another instance holds.
+
+    Single-instance is the ``fcntl.flock`` alone (§5; the A3 lesson — no
+    per-run ``locked_at`` mutex, no stale-lock reaper). Raised loud so a
+    double start dies visibly rather than two daemons racing the same DB.
+    """
+
+
+def acquire_daemon_lock(lock_path):
+    """Take the single-instance advisory lock, returning the open handle to hold.
+
+    Opens (creating) ``lock_path`` and takes a non-blocking exclusive
+    ``fcntl.flock``. The caller keeps the returned handle for the daemon's
+    life; closing it (or process death) drops the lock — the kernel reaps it,
+    so there is no stale-lock file to clean (§5, the A3 lesson).
+
+    Args:
+        lock_path: Filesystem path for the lock file — derived by the daemon as
+            ``state_file + ".lock"``, on the same local disk as the DB.
+
+    Returns:
+        The open file handle; hold it, and ``close()`` it to release.
+
+    Raises:
+        DaemonLockError: another instance already holds the lock (the
+            ``BlockingIOError``/``OSError`` from a failed non-blocking flock).
+    """
+    handle = open(lock_path, "w", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError) as flock_error:
+        handle.close()
+        raise DaemonLockError(
+            f"cannot acquire the daemon lock at {lock_path!r}: another sluice "
+            f"daemon holds the lock (single-instance is the flock alone, §5)"
+        ) from flock_error
+    return handle
+
+
+def assemble_registry(*registries: Mapping[str, object]) -> Mapping[str, object]:
+    """Union several profile registries, raising on any duplicate key.
+
+    The composition-root obligation (plan 05 §7): production registries merge
+    with the reference registry here, and a ``pipeline_version`` carried by two
+    of them is a mis-assembly that would silently shadow one definition with
+    another (``{**a, **b}`` hides it). Fail loud instead, and return a
+    read-only proxy so no caller can mutate the assembled surface.
+
+    Args:
+        registries: the registries to union, in precedence-free order — no key
+            may appear in two of them.
+
+    Returns:
+        A read-only ``MappingProxyType`` union of every entry.
+
+    Raises:
+        ValueError: a ``pipeline_version`` key appears in more than one
+            registry; the message names the colliding key.
+    """
+    merged: dict[str, object] = {}
+    for registry in registries:
+        for pipeline_version, profile in registry.items():
+            if pipeline_version in merged:
+                raise ValueError(
+                    f"duplicate pipeline_version {pipeline_version!r} across "
+                    f"assembled registries — a merge-time shadow (plan 05 §7); "
+                    f"every profile key must be unique in the union"
+                )
+            merged[pipeline_version] = profile
+    return types.MappingProxyType(merged)
+
+
+def prepare_database(config, *, registry, default_pipeline_version):
+    """Migrate the DB to head and seed/validate the active-default profile key.
+
+    Startup obligation (plan 05 §7): apply every pending migration, then in one
+    short transaction seed ``metadata.pipeline_profile`` with
+    ``default_pipeline_version`` if the key is absent — validating it resolves
+    first — or, if an operator already set it, leave that value untouched but
+    validate the *stored* value still resolves. An unresolvable active default
+    is a single loud startup error, never N per-run quarantines.
+
+    Args:
+        config: the loaded config; ``state_file`` is read by subscript.
+        registry: the assembled profile registry to validate against.
+        default_pipeline_version: the deployment default to seed on a fresh DB.
+
+    Returns:
+        The database path.
+
+    Raises:
+        UnknownProfileError: the default (fresh DB) or the stored value
+            (existing DB) does not resolve against ``registry``.
+        ValueError: a stored/default value resolves to a mis-keyed profile
+            (propagated from ``load_profile``).
+    """
+    db_path = config["state_file"]
+    initialize_database(db_path)
+    with write_txn(db_path) as connection:
+        stored = get_metadata(connection, control.PIPELINE_PROFILE_KEY)
+        if stored is None:
+            # Validate before seeding: an unresolvable default must fail at
+            # startup, and the rollback leaves the key unseeded.
+            load_profile(default_pipeline_version, registry)
+            set_metadata(
+                connection, control.PIPELINE_PROFILE_KEY, default_pipeline_version
+            )
+        else:
+            # An operator's set_default_profile outranks the deployment default;
+            # still validate the stored value resolves (a bad active default is
+            # one startup error, not one quarantine per run).
+            load_profile(stored, registry)
+    return db_path
+
+
+def detect_new_runs(config, *, notifier=None) -> list[str]:
+    """List the watch directory's subdirectories and insert each unseen run once.
+
+    Detection (§3.2): the immediate *subdirectories* of ``watch_dir`` (files
+    ignored), sorted by name; each unseen name is inserted in ONE ``write_txn``
+    with ``pipeline_version`` stamped from ``metadata.pipeline_profile`` read in
+    that same transaction — the ONLY moment the active default is read for a
+    run (§8 freeze). ``insert_run``'s idempotent bool gates the post-commit
+    ``run.detected`` line and ``open_run_thread`` notify, so a re-sweep is
+    silent.
+
+    Args:
+        config: the loaded config; ``watch_dir`` and ``state_file`` by subscript.
+        notifier: optional milestone notifier; called via ``safe_notify``.
+
+    Returns:
+        The genuinely-new run names, sorted.
+
+    Raises:
+        KeyError: ``config`` lacks ``watch_dir`` or ``state_file``.
+        RuntimeError: ``metadata.pipeline_profile`` is unseeded — only reachable
+            if ``prepare_database`` was skipped; names the missing key.
+    """
+    db_path = config["state_file"]
+    watch_dir = config["watch_dir"]
+    # List before the transaction so the write_txn stays short (§5).
+    subdirectory_names = sorted(
+        entry.name for entry in pathlib.Path(watch_dir).iterdir() if entry.is_dir()
+    )
+    newly_detected: list[str] = []
+    with write_txn(db_path) as connection:
+        default_pipeline_version = get_metadata(
+            connection, control.PIPELINE_PROFILE_KEY
+        )
+        if default_pipeline_version is None:
+            raise RuntimeError(
+                f"metadata key {control.PIPELINE_PROFILE_KEY!r} is not seeded — "
+                f"detection needs the active-default profile; run "
+                f"prepare_database first (plan 09 §3.2)"
+            )
+        for name in subdirectory_names:
+            if insert_run(connection, name, pipeline_version=default_pipeline_version):
+                newly_detected.append(name)
+    # Post-commit only (persist-then-emit): the rows exist before any line or
+    # notify describes them.
+    for name in newly_detected:
+        log.info(
+            "run.detected",
+            **{"run.name": name, "run.pipeline_version": default_pipeline_version},
+        )
+        safe_notify(notifier, "open_run_thread", name)
+    return newly_detected
+
+
+def _get_run_row(db_path, run_name):
+    """Fetch one run row on a fresh short-lived read connection, then close it.
+
+    Every drive step re-fetches through this — statelessness is *re-derivation*
+    from the committed DB, never a cached row (§3.3). A plain read connection,
+    closed immediately (``get_connection``'s context manager would commit, not
+    close — the DB is the single authority).
+
+    Args:
+        db_path: the state database path.
+        run_name: the run to fetch.
+
+    Returns:
+        The run row, or ``None`` if no such run exists.
+    """
+    connection = get_connection(db_path)
+    try:
+        return get_run(connection, run_name)
+    finally:
+        connection.close()
+
+
+def _stamp_quarantine(db_path, run_name, reason: str) -> None:
+    """Write the quarantine pair ``errored_at``/``error_reason`` in one short txn.
+
+    The direct progress write (never audited, plan 07 §6): the paired columns
+    move together to satisfy the schema CHECK. Opened only after the decision
+    to quarantine is made — no gate call is in flight.
+
+    Args:
+        db_path: the state database path.
+        run_name: the run to quarantine.
+        reason: the human-readable ``error_reason`` naming the anomaly.
+    """
+    with write_txn(db_path) as connection:
+        update_run(
+            connection, run_name, {"error_reason": reason, "errored_at": now_iso()}
+        )
+
+
+def _quarantine_without_gate(db_path, run_name, reason: str, notifier) -> str:
+    """Quarantine a run for a resolution anomaly with no gate to blame (§3.5).
+
+    The per-run isolation contract: a contract/context resolution failure
+    quarantines exactly this run and emits ``run.finished`` with no ``gates``
+    and no ``failed.gate`` (there is no gate), then notifies — never a loop
+    crash.
+
+    Args:
+        db_path: the state database path.
+        run_name: the run to quarantine.
+        reason: the ``error_reason`` naming the resolution anomaly.
+        notifier: optional milestone notifier.
+
+    Returns:
+        The literal token ``"quarantined"``.
+    """
+    _stamp_quarantine(db_path, run_name, reason)
+    committed_row = _get_run_row(db_path, run_name)
+    emit_run_event(committed_row)
+    safe_notify(notifier, "finish_run_thread", run_name, "quarantined", reason)
+    return "quarantined"
+
+
+def process_run(config, run_name, *, registry, notifier=None, should_stop=None) -> str:
+    """Drive one run through its gates until it blocks, one gate per look.
+
+    The per-run step (§3.3–3.6), repeated within a cycle (⚑2 drive-until-
+    blocked): each iteration re-fetches the row, re-checks eligibility
+    (``lifecycle == 'active' and errored_at is None``), re-derives the contract
+    (``apply_exclusions(load_profile(...), run_exclusions(row))``), and either
+    stamps completion, runs the lowest-order runnable gate, or stops. Every
+    step is a full stateless re-derivation, so a hold/skip/quarantine landing
+    mid-drive is honored at the next gate boundary. Quarantine-grade
+    resolution failures (§3.5) quarantine this ONE run; reconcile's schema-drift
+    ``KeyError`` and persist ``OperationalError`` are fatal by design and
+    propagate — the catches wrap the specific call sites, never the whole body.
+
+    Args:
+        config: the loaded config.
+        run_name: the run to drive.
+        registry: the assembled profile registry.
+        notifier: optional milestone notifier.
+        should_stop: optional zero-arg predicate checked between gate steps; a
+            truthy return stops the drive (SIGTERM finishes the current gate).
+
+    Returns:
+        One token from ``{"missing", "ineligible", "quarantined", "held",
+        "completed", "already-complete", "stopped"}``.
+    """
+    db_path = config["state_file"]
+    while True:
+        if should_stop is not None and should_stop():
+            return "stopped"
+
+        run_row = _get_run_row(db_path, run_name)
+        if run_row is None:
+            # The missing-row anomaly: loud, never fatal (the row was deleted
+            # between selection and this look).
+            log.error("run.vanished", **{"run.name": run_name})
+            return "missing"
+
+        # §3.3 eligibility, re-checked on the fresh row every step — the same
+        # predicate as db's non-exported ACTIVE_RUNS_WHERE, re-implemented inline.
+        if not (run_row["lifecycle"] == "active" and run_row["errored_at"] is None):
+            return "ineligible"
+
+        # Contract derivation — the §3.5 quarantine class (call-site-scoped, so
+        # reconcile's fatal KeyError below is never swallowed).
+        try:
+            base_profile = load_profile(run_row["pipeline_version"], registry)
+            excluded_gate_ids = control.run_exclusions(run_row)
+            contract = apply_exclusions(base_profile, excluded_gate_ids)
+        except (UnknownProfileError, ValueError) as resolution_error:
+            reason = (
+                f"contract resolution failed for run {run_name!r}: "
+                f"{type(resolution_error).__name__}: {resolution_error}"
+            )
+            return _quarantine_without_gate(db_path, run_name, reason, notifier)
+
+        # Completion look (§3.6): re-derived every look; completed_at is a cache.
+        if is_complete(run_row, contract):
+            if run_row["completed_at"] is None:
+                with write_txn(db_path) as connection:
+                    update_run(connection, run_name, {"completed_at": now_iso()})
+                committed_row = _get_run_row(db_path, run_name)
+                emit_run_event(committed_row, gates=required_gates(contract))
+                safe_notify(notifier, "finish_run_thread", run_name, "completed")
+                return "completed"
+            return "already-complete"
+
+        gate = next_gate(run_row, contract)
+
+        # Context resolution — the second §3.5 quarantine call site.
+        try:
+            context = resolve_context(run_row, config)
+        except (ValueError, KeyError) as context_error:
+            reason = (
+                f"context resolution failed for run {run_name!r}: "
+                f"{type(context_error).__name__}: {context_error}"
+            )
+            return _quarantine_without_gate(db_path, run_name, reason, notifier)
+
+        # The caller-mkdirs obligation (plan 04 §7): create workdir before run.
+        context.workdir.mkdir(parents=True, exist_ok=True)
+
+        # Time gate.run with a monotonic clock (no datetime import); the persist
+        # write_txn opens only AFTER this returns (short transactions, §5).
+        started = time.monotonic()
+        try:
+            result = gate.run(context)
+        except Exception as gate_error:  # noqa: BLE001 — an escape becomes FAILURE
+            # §3.4: a raised gate never dies the loop; it becomes a quarantine.
+            result = GateResult(
+                GateOutcome.FAILURE,
+                reason=(
+                    f"unhandled {type(gate_error).__name__} in gate "
+                    f"{gate.id!r}: {gate_error}"
+                ),
+            )
+        duration_ms = int((time.monotonic() - started) * 1000)
+
+        outcome = result.outcome
+        if outcome is GateOutcome.SUCCESS:
+            with write_txn(db_path) as connection:
+                update_run(connection, run_name, {gate.satisfied_column: 1})
+            emit_gate_event(run_name, gate, result, duration_ms=duration_ms)
+            safe_notify(notifier, "post_milestone", run_name, f"{gate.name} completed")
+            continue  # drive the next gate
+
+        if outcome is GateOutcome.HELD:
+            # Nothing is persisted (plan 02 §3.2); terminate in-flight work if
+            # the gate is interruptible; no run.finished (held is not terminal).
+            if gate.terminate is not None:
+                gate.terminate(context)
+            emit_gate_event(run_name, gate, result, duration_ms=duration_ms)
+            return "held"
+
+        # FAILURE or SKIPPED — both quarantine as a failure (ADR-0004 d.4 for
+        # SKIPPED: the column is never set; the gate/contract disagreement is a
+        # human decision).
+        if outcome is GateOutcome.SKIPPED:
+            reason = (
+                f"gate '{gate.id}' returned SKIPPED but is in this run's "
+                f"contract (ADR-0004 d.4): the gate and the contract disagree "
+                f"— a human decides which is wrong"
+            )
+        else:
+            reason = result.reason
+        _stamp_quarantine(db_path, run_name, reason)
+        emit_gate_event(run_name, gate, result, duration_ms=duration_ms)
+        committed_row = _get_run_row(db_path, run_name)
+        emit_run_event(committed_row, extra={"failed.gate": gate.id})
+        safe_notify(notifier, "finish_run_thread", run_name, "quarantined", reason)
+        return "quarantined"
+
+
+def run_cycle(
+    config,
+    *,
+    registry,
+    notifier=None,
+    disk_floor_check: Callable[[Mapping], str | None] | None = None,
+    should_stop=None,
+) -> dict:
+    """Run one full look: pause head-check → disk floor → detect → per-run drive.
+
+    Cycle order is spec §7 verbatim (§3.8). The loop-head ``is_paused`` check
+    short-circuits *everything* — including detection and the disk check — so a
+    disk-tripped pause cannot re-fire ``control.pause`` every cycle (one audit
+    row per trip). Below the floor (B5, ⚑1): audited ``control.pause`` with
+    actor ``"daemon"`` plus one error-level ``daemon.paused`` line; no
+    auto-clear (operator ``resume`` only), no run quarantine (global check, no
+    tripping run). A ``disk_floor_check`` that raises is logged and treated as
+    healthy (fail-open, D1 posture).
+
+    Args:
+        config: the loaded config; ``state_file`` by subscript.
+        registry: the assembled profile registry.
+        notifier: optional milestone notifier.
+        disk_floor_check: optional ``config -> reason|None`` seam; a reason
+            string trips the auto-pause.
+        should_stop: optional zero-arg predicate checked between runs and passed
+            through to each ``process_run``.
+
+    Returns:
+        A small plain status dict (never authoritative state):
+        ``{"status": ..., "detected": [...], "runs": {name: token}}``.
+    """
+    db_path = config["state_file"]
+
+    # §3.8 loop-head pause parse — the one B5 read site; a plain read connection,
+    # closed immediately.
+    pause_connection = get_connection(db_path)
+    try:
+        currently_paused = control.is_paused(pause_connection)
+    finally:
+        pause_connection.close()
+    if currently_paused:
+        return {"status": "paused", "detected": [], "runs": {}}
+
+    if disk_floor_check is not None:
+        try:
+            floor_reason = disk_floor_check(config)
+        except Exception as disk_check_error:  # noqa: BLE001 — fail-open (D1)
+            log.error(
+                "disk_floor_check.failed",
+                **{"error.type": type(disk_check_error).__name__},
+            )
+            floor_reason = None
+        if floor_reason is not None:
+            reason = f"disk floor: {floor_reason}"
+            # The ONE sanctioned daemon→control call (⚑1): audited pause, actor
+            # "daemon", target_run NULL.
+            control.pause(db_path, "daemon", reason=reason)
+            log.error("daemon.paused", **{"daemon.reason": reason})
+            return {"status": "disk-paused", "detected": [], "runs": {}}
+
+    detected = detect_new_runs(config, notifier=notifier)
+
+    selection_connection = get_connection(db_path)
+    try:
+        active_rows = select_active_runs(selection_connection)
+    finally:
+        selection_connection.close()
+
+    run_tokens: dict[str, str] = {}
+    stopped = False
+    for run_row in active_rows:
+        if should_stop is not None and should_stop():
+            stopped = True
+            break
+        token = process_run(
+            config,
+            run_row["name"],
+            registry=registry,
+            notifier=notifier,
+            should_stop=should_stop,
+        )
+        run_tokens[run_row["name"]] = token
+        if token == "stopped":
+            stopped = True
+            break
+
+    return {
+        "status": "stopped" if stopped else "ok",
+        "detected": detected,
+        "runs": run_tokens,
+    }
+
+
+def _make_shutdown_handler(shutdown_event: threading.Event):
+    """Build a signal handler that records the request and sets the shutdown flag.
+
+    Decision A (§3.7): a signal carries zero control semantics — it emits the
+    ``daemon.shutdown_requested`` line and sets a ``threading.Event``, nothing
+    else. No signal ever reaches a gate; holds stay poll-only.
+
+    Args:
+        shutdown_event: the flag the handler sets.
+
+    Returns:
+        A ``(signum, frame)`` handler function.
+    """
+
+    def _handle(signum, frame):
+        """Record the shutdown request and set the flag; touch nothing else."""
+        log.info(
+            "daemon.shutdown_requested",
+            **{"daemon.signal": signal.Signals(signum).name},
+        )
+        shutdown_event.set()
+
+    return _handle
+
+
+def install_signal_handlers(shutdown_event: threading.Event) -> None:
+    """Install the SIGTERM/SIGINT handlers that set ``shutdown_event`` (decision A).
+
+    Both signals map to the same flag-only handler: the current cycle finishes
+    its gate, then the loop exits cleanly (systemd-ready). Must run on the main
+    thread.
+
+    Args:
+        shutdown_event: the flag the handlers set on receipt of a signal.
+    """
+    handler = _make_shutdown_handler(shutdown_event)
+    signal.signal(signal.SIGTERM, handler)
+    signal.signal(signal.SIGINT, handler)
+
+
+def _interruptible_sleep(total_seconds: float, shutdown_event: threading.Event) -> None:
+    """Sleep up to ``total_seconds``, waking early once ``shutdown_event`` is set.
+
+    Sliced ~1 s against the flag (§3.7): a flag-only signal handler does not
+    interrupt ``time.sleep``, so the sleep is chopped into short naps that
+    re-check the event, keeping SIGTERM's shutdown latency near a second.
+
+    Args:
+        total_seconds: the poll interval to wait.
+        shutdown_event: the flag whose set state ends the wait early.
+    """
+    deadline = time.monotonic() + total_seconds
+    while not shutdown_event.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(1.0, remaining))
+
+
+def run_forever(
+    config,
+    *,
+    registry,
+    default_pipeline_version,
+    notifier=None,
+    disk_floor_check: Callable[[Mapping], str | None] | None = None,
+    max_cycles: int | None = None,
+) -> None:
+    """Take the lock, prepare state, then run cycles until shutdown or ``max_cycles``.
+
+    The process entrypoint (§3.7), built systemd-ready. Startup order: read
+    ``poll_interval_minutes`` by subscript (fail-loud before any work), acquire
+    the single-instance lock (loud refusal of a second instance, before the
+    DB), ``prepare_database``, install the flag-only signal handlers, emit
+    ``daemon.started``. Each iteration runs one ``run_cycle`` with
+    ``should_stop`` bound to the shutdown flag, then an interruptible sleep;
+    ``max_cycles`` gives the ``--once`` mode. On the flag or exhaustion:
+    ``daemon.stopped`` and a finally-guaranteed lock release.
+
+    Args:
+        config: the loaded config; ``poll_interval_minutes`` and ``state_file``
+            by subscript.
+        registry: the assembled profile registry.
+        default_pipeline_version: the deployment default seeded on a fresh DB.
+        notifier: optional milestone notifier.
+        disk_floor_check: optional disk-floor seam (see ``run_cycle``).
+        max_cycles: run at most this many cycles then stop (``None`` = forever).
+
+    Raises:
+        KeyError: ``config`` lacks ``poll_interval_minutes`` or ``state_file``
+            (fail-loud before the lock is taken).
+        DaemonLockError: another instance holds the lock (before the DB).
+    """
+    # Fail loud on missing config BEFORE any side effect (unit 6).
+    poll_interval_minutes = config["poll_interval_minutes"]
+    lock_path = str(config["state_file"]) + ".lock"
+
+    lock_handle = acquire_daemon_lock(lock_path)
+    try:
+        prepare_database(
+            config,
+            registry=registry,
+            default_pipeline_version=default_pipeline_version,
+        )
+        shutdown_event = threading.Event()
+        install_signal_handlers(shutdown_event)
+        log.info(
+            "daemon.started", **{"daemon.poll_interval_minutes": poll_interval_minutes}
+        )
+
+        cycles_run = 0
+        while not shutdown_event.is_set():
+            if max_cycles is not None and cycles_run >= max_cycles:
+                break
+            run_cycle(
+                config,
+                registry=registry,
+                notifier=notifier,
+                disk_floor_check=disk_floor_check,
+                should_stop=shutdown_event.is_set,
+            )
+            cycles_run += 1
+            if max_cycles is not None and cycles_run >= max_cycles:
+                break
+            _interruptible_sleep(poll_interval_minutes * 60, shutdown_event)
+
+        log.info("daemon.stopped", **{"daemon.cycles_run": cycles_run})
+    finally:
+        lock_handle.close()
+
+
+def _is_safe_path_component(run_name: str) -> bool:
+    r"""Return whether ``run_name`` is a single safe path component.
+
+    The safe-component rule, re-implemented here (§3.11 / unit 7): a name that
+    contains ``/`` or ``\\``, or equals ``""``/``"."``/``".."``, must never
+    become a per-run jsonl path. ``resolve_context`` keeps the same rule inline
+    at its identity→path boundary — there is no exported helper to import — so
+    this mirrors it.
+
+    Args:
+        run_name: the ``run.name`` field value to validate.
+
+    Returns:
+        ``True`` iff the name is a single safe path component.
+    """
+    return not ("/" in run_name or "\\" in run_name or run_name in ("", ".", ".."))
+
+
+def _make_sink_processor(
+    events_logger, console_logger, console_renderer, run_events_dir
+):
+    """Build the terminal structlog processor that fans one event out to the sinks.
+
+    The routing heart of ``configure_logging`` (§3.11): every event is rendered
+    to a JSON line and written to the rotating events sink; an event carrying a
+    safe ``"run.name"`` is also appended to ``run_events_dir/<run.name>.jsonl``
+    (the literal field plan 03 fixed as load-bearing); an unsafe name goes to
+    the main sink only plus one error line. The event is also rendered to the
+    console sink. The processor drops the event so no logger factory writes it
+    again.
+
+    Args:
+        events_logger: the stdlib logger owning the rotating jsonl handler.
+        console_logger: the stdlib logger owning the console handler.
+        console_renderer: a ``structlog`` console renderer callable.
+        run_events_dir: the directory for per-run jsonl files.
+
+    Returns:
+        A structlog processor ``(logger, method_name, event_dict)``.
+    """
+
+    def _process(logger, method_name, event_dict):
+        """Render one event to every sink, then drop it from the chain."""
+        json_line = json.dumps(dict(event_dict), default=str, sort_keys=True)
+        events_logger.info(json_line)
+
+        run_name = event_dict.get("run.name")
+        if run_name is not None:
+            if _is_safe_path_component(run_name):
+                per_run_path = pathlib.Path(run_events_dir) / f"{run_name}.jsonl"
+                with per_run_path.open("a", encoding="utf-8") as per_run_file:
+                    per_run_file.write(json_line + "\n")
+            else:
+                # Never turn an unsafe identity into a path (§3.11): main sink
+                # only, plus one error line (no run.name, so no recursion here).
+                log.error(
+                    "run_events.unsafe_name",
+                    **{"run_events.rejected_name": run_name},
+                )
+
+        console_logger.info(console_renderer(logger, method_name, dict(event_dict)))
+        raise structlog.DropEvent
+
+    return _process
+
+
+def _reset_stdlib_logger(name: str) -> logging.Logger:
+    """Return the named stdlib logger with its handlers removed and closed.
+
+    Idempotency support for ``configure_logging`` (unit 7): repeat calls must
+    replace, never stack, handlers — so every prior handler on the sink logger
+    is detached and closed before a fresh one is attached.
+
+    Args:
+        name: the stdlib logger name to reset.
+
+    Returns:
+        The reset logger (no handlers, non-propagating, INFO level).
+    """
+    stdlib_logger = logging.getLogger(name)
+    for existing_handler in list(stdlib_logger.handlers):
+        stdlib_logger.removeHandler(existing_handler)
+        existing_handler.close()
+    stdlib_logger.setLevel(logging.INFO)
+    stdlib_logger.propagate = False
+    return stdlib_logger
+
+
+def configure_logging(config) -> None:
+    """Configure structlog: ISO-UTC lines, a rotating jsonl sink, per-run routing.
+
+    The minimal ``logging_setup`` port (plan 03 §7): every event gets an
+    ISO-UTC timestamp and level, is written as a JSON line to
+    ``config["events_file"]`` through a ``RotatingFileHandler`` sized by
+    ``events_max_mb``/``events_backup_count``, and — iff it carries a safe
+    ``"run.name"`` — appended to ``config["run_events_dir"]/<run.name>.jsonl``.
+    The console sink renders the same events for humans. Idempotent: repeat
+    calls replace, never stack, handlers. Heartbeats and the deployment-context
+    fields stay Plan B (D5). Config keys are read by subscript, fail-loud.
+
+    Args:
+        config: the loaded config; ``events_file``, ``events_max_mb``,
+            ``events_backup_count`` and ``run_events_dir`` by subscript.
+
+    Raises:
+        KeyError: ``config`` lacks any required logging key.
+    """
+    events_file = pathlib.Path(config["events_file"])
+    events_max_mb = config["events_max_mb"]
+    events_backup_count = config["events_backup_count"]
+    run_events_dir = pathlib.Path(config["run_events_dir"])
+
+    events_file.parent.mkdir(parents=True, exist_ok=True)
+    run_events_dir.mkdir(parents=True, exist_ok=True)
+
+    events_logger = _reset_stdlib_logger("sluice._events_sink")
+    rotating_handler = logging.handlers.RotatingFileHandler(
+        events_file,
+        maxBytes=events_max_mb * 2**20,
+        backupCount=events_backup_count,
+        encoding="utf-8",
+    )
+    rotating_handler.setFormatter(logging.Formatter("%(message)s"))
+    events_logger.addHandler(rotating_handler)
+
+    console_logger = _reset_stdlib_logger("sluice._console_sink")
+    # No stream argument: logging.StreamHandler defaults to stderr, so the
+    # console sink reaches stderr without this module importing sys (§3.11).
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
+    console_logger.addHandler(console_handler)
+
+    console_renderer = structlog.dev.ConsoleRenderer(colors=False)
+
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso", utc=True),
+            _make_sink_processor(
+                events_logger, console_logger, console_renderer, run_events_dir
+            ),
+        ],
+        logger_factory=structlog.ReturnLoggerFactory(),
+        cache_logger_on_first_use=False,
+    )
