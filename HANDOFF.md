@@ -1,6 +1,6 @@
 # sluice — Handoff & Compaction Record
 
-**Updated:** 2026-07-28 (macOS session — audit committed, 7 of 9 done; the §9 control-op choreography is now landed contract; next: control — see §10 item 3h)
+**Updated:** 2026-07-29 (macOS session — control committed, 8 of 9 done; ADR-0005 recorded; build shifted to the lightweight mode, see §9a; next: daemon — see §10 item 3i)
 **Purpose:** The single file to read when resuming this project — across sessions, across the two
 environments, and across context compaction. If a summary ever replaces the live conversation, start
 here.
@@ -28,14 +28,17 @@ LabKey register). The **architecture is approved** (design of record). The **tra
 designed and — on macOS — now EXECUTED**: the repo skeleton, config schema, CI, lockfile, and the
 dependency-arrow guard test all exist and `pixi run test` is green.
 
-**Plan A is 7 of 9 subsystems built, committed, and green (27 commits on `main`, none pushed —
-no remote configured).** db, gate, events, context, profile, reconcile, audit are done;
-`pixi run test` → 321 passed, lint clean. **ADR-0004 (binary contracts) is executed in code:** the
-profile vocabulary is now `required|disabled` — a run's contract is binary, every contract gate
-mandatory, excluded gates absent; there is no runtime optional tier. **The §9 control-op
-choreography (mutate → audit → commit → event) is landed as audit's binding contract.** Remaining
-Plan A: control → daemon. Then Plan B (production gates) → Plan C (API + CLI). python-poller keeps
-running untouched throughout; sluice stays observe-only until Plan A+B reach parity.
+**Plan A is 8 of 9 subsystems built, committed, and green (30 commits on `main`, none pushed —
+no remote configured).** db, gate, events, context, profile, reconcile, audit, control are done;
+`pixi run test` → 394 passed, lint clean. **ADR-0004 (binary contracts) is executed in code:** the
+profile vocabulary is `required|disabled` — a run's contract is binary, every contract gate
+mandatory, excluded gates absent; there is no runtime optional tier — and control's
+`exclude_gate` op is the remediation-is-exclusion mechanism (d.3). **ADR-0005 is recorded:** no
+automatic file deletion — operators own destructive filesystem actions; rewinds
+(`reset_gate`/`backtrack`/`reset`) are column-clear only; `invalidate` dormant; B7 reap frozen
+pending sign-off. The migration ladder is at **006** (`excluded_gates`). Remaining Plan A:
+daemon. Then Plan B (production gates) → Plan C (API + CLI). python-poller keeps running
+untouched throughout; sluice stays observe-only until Plan A+B reach parity.
 
 ---
 
@@ -219,12 +222,12 @@ From the errata. None block the bootstrap.
 
 ## 9. Current status — what physically exists
 
-### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-28
+### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-29
 
-**Bootstrap + db + gate + events + context + profile + reconcile + audit subsystems: complete and
-committed — 7 of 9 Plan A subsystems are green. `pixi run test` → 321 passed (Python 3.14.6,
-pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard green
-(auto-covering `sluice.core.audit`).**
+**Bootstrap + db + gate + events + context + profile + reconcile + audit + control subsystems:
+complete and committed — 8 of 9 Plan A subsystems are green. `pixi run test` → 394 passed
+(Python 3.14.6, pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard
+green (auto-covering `sluice.core.control`).**
 
 - `git init` on `main` — ✅ **initial commit exists:** `638b7482` *(bootstrap: repo skeleton,
   config schema, CI, guardrails, db unit work)*, 24 files, on `main`, not pushed. db units 1–3
@@ -406,19 +409,45 @@ pytest 9.1.1); `pixi run lint` clean (including format); dependency-arrow guard 
   - Errata note: `specs/sluice-spec-errata.md` (gitignored with the other specs — this working
     copy only) gained **§F** — the F-ADR4 record that ADR-0004 supersedes the affected spec
     passages.
-- ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **four** ADRs:
+- ✅ **control subsystem (8 of 9) complete and committed** 2026-07-29 on `main`, not pushed
+  (plan: `docs/superpowers/plans/08-control-plan.md` — all three ⚑ flags decided by the user
+  2026-07-29). **First subsystem built in the NEW LIGHTWEIGHT MODE** (see §9a — one
+  implementation pass + one adversarial review sweep, user-decided 2026-07-29 for token
+  economy). Two commits (plus this handoff commit):
+  - `34a1992` *(control: operator ops, exclusion overlay, migration 006)* —
+    `sluice/core/control.py` (29-name surface; all operator ops: pause/resume, hold/unhold,
+    skip/unskip, `clear_error`, protect/unprotect, `set_default_profile`, `set_gate` — B2
+    refuse-to-fabricate + `force`; `exclude_gate`/`include_gate`/`run_exclusions` — the
+    ADR-0004 d.3 remediation-is-exclusion mechanism; `reset_gate`/`backtrack` — ADR-0005
+    column-clear only, `ActiveRunError` on eligible runs; `reset`; `get_status` — total under
+    corruption, `experiment_id` always surfaced). Single-transaction mutate → audit → commit →
+    event choreography throughout; refusals audit-then-raise; zero file I/O (ast-enforced).
+    Plus **migration 006** (`runs.excluded_gates`, NULL-or-valid-JSON checked; ladder comment
+    now points later subsystems at 007+, superseding F-AUD1), the `set_metadata`
+    batch-inside-`write_txn` docstring (plan 08 F7), `profile.apply_exclusions` (the per-run
+    contract overlay — ten-name surface now), `tests/test_control.py` (69 tests incl. the
+    end-to-end operator journey, the nine-op artifacts-intact sweep — ADR-0005 executable —
+    the AND-ed recovery test, and the protection-precedence pin), and exactly the plan's
+    pre-authorized edits to `tests/test_db.py`/`test_gate.py`/`test_profile.py` (verified
+    hunk-by-hunk by the adversarial review). Resolves errata B2. Suite 321 → 394 passed.
+  - `8645689` *(docs: add control plan (08) — lightweight mode, all flags stamped)* — ⚑1
+    backtrack/fastforward approved as amended by ADR-0005; ⚑2 exclusion op approved
+    (migration 006); ⚑3 quiescence superseded by ADR-0005, residual posture recorded.
+- ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **FIVE** ADRs:
   `0001-docstring-standard.md`, `0002-gate-failure-and-persistence.md` (all failures quarantine;
   gates never write run state), `0003-core-import-policy.md` (structlog allowed in core;
   stdlib-only retired), **and the new `0004-binary-contracts.md`** (a run's contract is binary —
   no runtime optional tier; any contract gate returning SKIPPED quarantines; remediation is
-  exclusion via the subsystem-8 op; trait-based contract construction is Plan B's) — plus
+  exclusion via the subsystem-8 op; trait-based contract construction is Plan B's) **and the new
+  `0005-no-automatic-file-deletion.md`** (operators own destructive filesystem actions; rewinds
+  are column-clear only; `invalidate` dormant; B7 reap frozen pending sign-off) — plus
   `.claude/CLAUDE.md`, the amended `.claude/agents/*.md`
   (implementer/test-author/code-reviewer/docs-builder now enforce ADR-0001), and the
-  `docs/dev-cycle/` artifacts (`01-db/` through `06-reconcile/`, with **`07-audit/` being
-  generated now** — untracked like their siblings) are all still behind the deny-all
+  `docs/dev-cycle/` artifacts (`01-db/` through `07-audit/` — **no `08-control/` artifacts:
+  visual docs are optional in the lightweight mode**) are all still behind the deny-all
   allowlist `.gitignore` — the human curates the allowlist. **Standing open item:** no allowlist
-  rule for `docs/adr/` yet, so ADR-0001/0002/0003/0004 exist only in this working copy while code
-  commits cite them by name.
+  rule for `docs/adr/` yet, so ADR-0001/0002/0003/0004/0005 exist only in this working copy
+  while code commits cite them by name.
 - `pixi.toml` (name `sluice`, `platforms = ["linux-64", "osx-arm64"]`, deps: python 3.14 / pytest 9 /
   structlog) + `pixi.lock` (solved with pixi 0.72.1).
 - `config.example.json` — ~68 keys, **placeholders only**, `slack_bot_token` deliberately omitted.
@@ -494,6 +523,13 @@ build-verifier`) `→ integration-tester → docs-builder → teachme →` human
 `git-steward`.
 
 Reviewers are independent: they get the diff + plan + spec, never the author's reasoning.
+
+> **MODE SHIFT — lightweight mode (user-decided 2026-07-29, for token economy; first applied
+> to subsystem 8, control).** The per-unit `test-author → implementer → code-reviewer →
+> build-verifier` cycle is replaced by **one implementation pass + one adversarial review
+> sweep** over the whole subsystem; visual `docs/dev-cycle/` artifacts are optional. Planning
+> and human flag sign-off are unchanged; commits still go through `git-steward` with the full
+> pre-commit gate. **Future sessions follow this mode** unless the user says otherwise.
 
 ## 9b. Guardrail hooks (`.claude/settings.json`)
 
@@ -626,6 +662,23 @@ actually protected.
    decides the plan-07 §6 recommendations left to it (refused-op auditing on an autocommit
    connection, `get_status` writes no audit row, the `result` string vocabulary). No
    `reset_attempts` op exists, ever (ADR-0002).
+3i. ✅ **control subsystem built and committed** 2026-07-29 (`34a1992`, `8645689`, and this
+   handoff commit on `main`, not pushed; see §9). Subsystem 8 complete: built in the **new
+   lightweight mode** (§9a — one implementation pass + one adversarial review sweep), all three
+   ⚑ flags decided by the user 2026-07-29, 321 → 394 tests green, migration ladder now at
+   **006** (`excluded_gates`). **ADR-0005 recorded** (no automatic file deletion — operators
+   own destructive filesystem actions; rewinds are column-clear only; `invalidate` dormant;
+   B7 reap frozen pending sign-off). **Plan A now 8 of 9 subsystems done — db, gate, events,
+   context, profile, reconcile, audit, control all committed and green.**
+   Standing items: `docs/adr/` now holds FIVE gitignored ADRs (the 3a allowlist item grows
+   again); `docs/dev-cycle/` untracked (no `08-control/` artifacts — visual docs optional in
+   lightweight mode); no git remote configured; CHTC drift since 2026-07-17 (§2/§3) still
+   unresolved.
+   **Next: plan `daemon` (subsystem 9)** — planning underway in lightweight mode. It inherits
+   the outcome-persist policy (SUCCESS sets the column; FAILURE and SKIPPED quarantine,
+   ADR-0004 d.4), the `next_gate is None` completion stamp + persist-then-emit (B9), and the
+   per-run contract composition `apply_exclusions(load_profile(...), run_exclusions(row))`
+   (plan 08 §6).
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
