@@ -32,7 +32,7 @@ class GateOutcome(enum.Enum):
     SUCCESS = "success"  # loop may set satisfied_column = 1
     FAILURE = "failure"  # loop quarantines: errored_at + error_reason (ADR-0002)
     HELD = "held"  # terminated mid-run by a hold; loop writes nothing
-    SKIPPED = "skipped"  # gate judged itself inapplicable at runtime
+    SKIPPED = "skipped"  # in-contract SKIPPED = gate/contract contradiction: the daemon quarantines (ADR-0004 d.4)
 
 
 @dataclasses.dataclass(frozen=True)
