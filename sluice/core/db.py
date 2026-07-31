@@ -247,6 +247,29 @@ def _migration_006_excluded_gates(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_007_labkey_registered(conn: sqlite3.Connection) -> None:
+    """Add the ``experiment`` gate's satisfaction column to ``runs`` (plan 13 Unit 1).
+
+    Owned by Plan B's first production gate, living in this ladder per the same
+    F3-revision precedent as 005/006 (``initialize_database`` must work with
+    ``sluice.gates`` absent). ONE column — ``labkey_registered`` — per ⚑3:
+    migrations are INCREMENTAL, one satisfaction column per gate shipped with
+    its gate, superseding gate-map §6's "one coherent migration 007". The six
+    other production satisfaction columns are NOT added here; each arrives with
+    its own gate/migration. The gate's ``experiment_id`` OUTPUT needs no column
+    — it already exists from migration 001 (``db.py:148``, ADR-0006 consequence).
+
+    ``INTEGER NOT NULL DEFAULT 0``, never nullable: a nullable satisfaction
+    column gives reconcile three-valued logic (``WHERE col = 0`` silently misses
+    NULL), and the constant default keeps the ALTER legal on a populated table —
+    pre-existing rows land unsatisfied, which is correct because they never ran
+    the gate.
+    """
+    conn.execute(
+        "ALTER TABLE runs ADD COLUMN labkey_registered INTEGER NOT NULL DEFAULT 0",
+    )
+
+
 # (version, name, apply_fn) each. The framework (unit 4) runs each apply_fn in its
 # own BEGIN IMMEDIATE/COMMIT and records the version only on success, so the
 # apply_fns issue plain DDL and touch neither the transaction nor the ledger.
@@ -259,6 +282,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     (4, "004_idx_runs_eligible", _migration_004_idx_runs_eligible),
     (5, "005_mock_gate_columns", _migration_005_mock_gate_columns),
     (6, "006_excluded_gates", _migration_006_excluded_gates),
+    (7, "007_labkey_registered", _migration_007_labkey_registered),
 )
 
 
