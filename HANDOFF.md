@@ -224,7 +224,7 @@ From the errata. None block the bootstrap.
 
 ## 9. Current status — what physically exists
 
-### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-30
+### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-31
 
 **PLAN A COMPLETE — all nine subsystems (db, gate, events, context, profile, reconcile, audit,
 control, daemon) complete, committed, and green. `pixi run test` → 435 passed (Python 3.14.6,
@@ -464,7 +464,45 @@ release candidate pending Plan B production gates.**
     Suite 394 → 435 passed.
   - `289f7c6` *(docs: add daemon plan (09) — lightweight mode, both flags stamped)* — the
     reviewed plan, READY TO BUILD, tracked via the plans allowlist.
-- ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **FIVE** ADRs:
+- ✅ **PLAN B OPENED — increment 1 (production detection) built and committed** 2026-07-31 on
+  `main`, not pushed. Groundwork, all user-decided: the **Plan B gate map is FINAL**
+  (`docs/superpowers/plans/10-plan-b-gate-map.md`, working copy only — see the ⚠️ below): EIGHT
+  gates in true execution order — experiment → download → checksum → samplesheet → registration
+  [DISABLED] → nvd → globus_submit → globus_verify — all six ⚑ flags stamped 2026-07-30/31.
+  **ADR-0006 accepted** (gate output persistence: `Gate.persists` becomes the eleventh contract
+  field; outputs written atomically with the satisfaction checkmark in ONE
+  `update_run`/`write_txn`; the globus submit/verify split makes A4's persist-before-wait
+  structural; the generic `gate_outputs` table PARKED with named revisit triggers). Errata gained
+  **F-B6** (NO time bounds on any gate — user-decided; the hung-gate-blocks-the-cycle consequence
+  consciously owned; revisit on a real observed hang) alongside the earlier F-V31 (merge is a
+  v3.1 no-op; raw lanes are the only on-disk copy). Two commits (plus this handoff commit):
+  - `e37210b` *(detection: rsync lister adapter behind an injected daemon seam)* —
+    `sluice/gates/detection.py` (a world adapter, NOT a Gate: pure `parse_rsync_listing` with
+    manifest-AND-`*001.fastq.gz` candidacy, stricter than the poller; `build_listing_command`
+    pinning the exact poller `--list-only` argv with the sshpass password in the `SSHPASS` env
+    overlay, never argv — the poller's process-table exposure fixed; `list_remote_runs` whose
+    `RemoteListingError` carries stderr, never argv/password), the daemon's injected-lister seam
+    (`watch_dir_lister` extracted as the default — Plan A behavior byte-identical; keyword-only
+    `lister=` on `detect_new_runs`/`run_cycle`/`run_forever`; lister called outside the
+    `write_txn`; unsafe names dropped with an event; `KeyError` loud, world failures degrade to
+    one `detection.failed` + zero candidates), `config.example.json` `remote_source_path`
+    placeholder (C2), and the go-live interlock (stamping `production-v3.1` dies loud at startup
+    until the profile registry entry lands). Suite 435 → **461 passed**; lint clean;
+    dependency-arrow guard green.
+  - `4cd9860` *(docs: add detection plan (11) — lightweight mode, no open flags)* — reviewed
+    READY, built same session.
+  - ⚠️ **Gate map (plan 10) held out of history by the git steward's pre-commit scan:** it cites
+    real LabKey project paths (§4 C2, lines 186-188) and the production Globus/CephFS destination
+    path (§5 ⚑A, line 265) — the exact leak class that motivated sluice's fresh history. It stays
+    untracked (the ADR convention: cited by name, curated out of git) until those values are
+    redacted to `<placeholders>` or their inclusion is explicitly approved.
+- ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **SIX** ADRs (the FIVE below
+  plus the new **`0006-gate-output-persistence.md`**, accepted 2026-07-31); also `notes/` and
+  `specs/` (the persistence research note and the errata's new §F entries — F-V31, F-B6 — exist
+  ONLY in this working copy); and the production poller clone now lives at
+  `/Users/willgardner/Bioinformatics/mizzou_fastq_automated_download` (read-only ground truth for
+  Plan B, hook-protected, refreshed 2026-07-30 — note the path differs from the guard hook's
+  legacy `python-poller` alias). Previously recorded FIVE ADRs:
   `0001-docstring-standard.md`, `0002-gate-failure-and-persistence.md` (all failures quarantine;
   gates never write run state), `0003-core-import-policy.md` (structlog allowed in core;
   stdlib-only retired), **and the new `0004-binary-contracts.md`** (a run's contract is binary —
@@ -729,6 +767,24 @@ actually protected.
    - **CHTC drift since 2026-07-17** (§2/§3) still unresolved.
    - Plan B carry-forwards: `invalidate`'s fate (dormant per ADR-0005), B7 reap sign-off
      (frozen), and the config-key fatal-class revisit raised in the daemon review.
+3k. ✅ **PLAN B OPENED — production detection (increment 1) built and committed** 2026-07-31
+   (`e37210b`, `4cd9860`, and this handoff commit on `main`, not pushed; see §9). The gate map
+   is FINAL (eight gates: experiment → download → checksum → samplesheet → registration
+   [DISABLED] → nvd → globus_submit → globus_verify; all six ⚑ flags stamped 2026-07-30/31);
+   **ADR-0006 accepted** (`Gate.persists` eleventh field; output + checkmark written atomically
+   in one txn; the globus split makes A4 structural; `gate_outputs` parked with revisit
+   triggers); **F-B6 recorded** (no gate time bounds — user-decided, hung-gate consequence
+   owned). Increment 1: lightweight mode, one adversarial review, user-approved; 435 → 461
+   tests green. Detection is a world adapter behind an injected `lister` seam — sshpass
+   password via `SSHPASS` env, never argv; go-live interlock means `production-v3.1` cannot be
+   stamped until its profile registry entry lands.
+   **Next: the ADR-0006 persistence substrate, then the `experiment` gate** (gate map §8; the
+   CephFS disk strategy D1 remains small and unblocking whenever slotted).
+   Standing items: `docs/adr/` now holds **SIX** gitignored ADRs (0006 new); `notes/` and
+   `specs/` untracked (persistence research note + errata §F entries exist only in this working
+   copy); `docs/dev-cycle/` untracked; **the gate map (plan 10) held out of history by the
+   pre-commit scan pending redaction of its production paths (§9)**; no git remote; CHTC drift
+   since 2026-07-17 (§2/§3) unresolved; the poller clone path note (§9) for the guard hook.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
