@@ -479,8 +479,47 @@ def process_run(config, run_name, *, registry, notifier=None, should_stop=None) 
 
         outcome = result.outcome
         if outcome is GateOutcome.SUCCESS:
+            # ADR-0006 d.2: on SUCCESS the daemon writes every declared persists
+            # output AND the satisfaction column in ONE update_run / ONE
+            # write_txn — output and checkmark can never disagree. Gates only
+            # RETURN metadata (ADR-0002); the daemon is the sole writer.
+            metadata = result.metadata or {}
+            missing = [key for key in gate.persists if key not in metadata]
+            if missing:
+                # A gate that returned SUCCESS but omitted a declared output
+                # cannot have its checkmark set — the output and its column move
+                # together or not at all. Quarantine this ONE run (data
+                # anomaly), mirroring the SKIPPED/FAILURE tail: a SYNTHETIC
+                # FAILURE feeds the gate event so gate.finished reads honestly
+                # as a failure, not a misleading success. Nothing is written to
+                # the satisfaction column, so the refusal is atomic.
+                reason = (
+                    f"gate {gate.id!r} returned SUCCESS but omitted declared "
+                    f"persists key(s) {sorted(missing)} — the output and its "
+                    f"satisfaction column must be written together (ADR-0006 d.2)"
+                )
+                failure = GateResult(GateOutcome.FAILURE, reason=reason)
+                _stamp_quarantine(db_path, run_name, reason)
+                emit_gate_event(run_name, gate, failure, duration_ms=duration_ms)
+                committed_row = _get_run_row(db_path, run_name)
+                emit_run_event(committed_row, extra={"failed.gate": gate.id})
+                safe_notify(
+                    notifier, "finish_run_thread", run_name, "quarantined", reason
+                )
+                return "quarantined"
+
+            # Missing = key ABSENT (guarded above), not value-is-None: a present
+            # key with a None value is the gate author's choice and persists as
+            # NULL. A persists column absent from the runs whitelist raises
+            # UnknownColumnError (a KeyError subclass) out of update_run — fatal
+            # by design (the catches above are call-site-scoped, so it is not
+            # swallowed), and the write_txn rolls back, so neither the output
+            # nor the checkmark lands.
+            fields = {gate.satisfied_column: 1}
+            for metadata_key, column in gate.persists.items():
+                fields[column] = metadata[metadata_key]
             with write_txn(db_path) as connection:
-                update_run(connection, run_name, {gate.satisfied_column: 1})
+                update_run(connection, run_name, fields)
             emit_gate_event(run_name, gate, result, duration_ms=duration_ms)
             safe_notify(notifier, "post_milestone", run_name, f"{gate.name} completed")
             continue  # drive the next gate

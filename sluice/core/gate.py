@@ -9,7 +9,8 @@ stdlib-only: ``gates -> core`` is one-way, so nothing here may import
 
 import dataclasses
 import enum
-from collections.abc import Callable, Iterable
+import types
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 __all__ = [
@@ -86,14 +87,16 @@ class GateResult:
 class Gate:
     """The task object — pure data plus function references, never methods.
 
-    Exactly these ten fields (plan 02 §3.1): no retry fields (B4/ADR-0002),
-    no applicability (that lives in the profile, subsystem 5), no timeout
-    (B6, deferred). ``order`` is TRUE execution order, never display/column
-    numbering — transcribing python-poller's ``PIPELINE_GATE_COLUMNS`` into
-    ``order`` deadlocks the daemon (errata B3/A6). ``needs`` and ``produces``
-    carry no default: a gate author must state dependencies explicitly.
-    ``run`` returns a result and never writes run state; the loop is the sole
-    writer (ADR-0002 decision 2).
+    Exactly these eleven fields (plan 02 §3.1; the eleventh, ``persists``,
+    added by ADR-0006 d.1): no retry fields (B4/ADR-0002), no applicability
+    (that lives in the profile, subsystem 5), no timeout (B6, deferred).
+    ``order`` is TRUE execution order, never display/column numbering —
+    transcribing python-poller's ``PIPELINE_GATE_COLUMNS`` into ``order``
+    deadlocks the daemon (errata B3/A6). ``needs`` and ``produces`` carry no
+    default: a gate author must state dependencies explicitly. ``run`` returns
+    a result and never writes run state; the loop is the sole writer (ADR-0002
+    decision 2) — ``persists`` only *declares* which ``GateResult.metadata``
+    keys the daemon copies onto which ``runs`` columns, never a gate-side write.
     """
 
     id: str  # stable key, e.g. "mock_alpha"
@@ -106,9 +109,11 @@ class Gate:
     invalidate: Callable[[Any], None]  # undo produces on disk; caller clears column
     terminate: Callable[[Any], None] | None = None  # stop in-flight work on hold
     control_point: bool = True  # daemon re-checks control state at checkpoints
+    # ADR-0006 d.1: metadata key -> runs column the daemon persists on SUCCESS.
+    persists: Mapping[str, str] = types.MappingProxyType({})
 
     def __post_init__(self) -> None:
-        """Coerce ``needs``/``produces`` to tuples and reject a self-need.
+        """Coerce ``needs``/``produces`` to tuples, seal ``persists``, reject a self-need.
 
         A frozen record is only as immutable as its weakest field (plan 02
         §3.1): a list passed at construction and kept by reference could be
@@ -116,6 +121,12 @@ class Gate:
         A gate that needs itself can never run — an undetectable reconcile
         deadlock at daemon runtime — and construction is the only place the
         contradiction is locally checkable (plan 02 unit 3), so it fails here.
+
+        ``persists`` is sealed exactly as ``RunContext`` seals ``config``
+        (ADR-0006 d.1): the ``dict`` copy detaches from the author's mapping —
+        a shared dict could otherwise mutate a gate's persist behavior after
+        construction — and the ``MappingProxyType`` wrapper makes item writes
+        raise. The default-empty case survives the copy as an empty proxy.
 
         Raises:
             TypeError: if ``needs`` or ``produces`` is not iterable.
@@ -125,6 +136,9 @@ class Gate:
         # during construction.
         object.__setattr__(self, "needs", tuple(self.needs))
         object.__setattr__(self, "produces", tuple(self.produces))
+        object.__setattr__(
+            self, "persists", types.MappingProxyType(dict(self.persists))
+        )
         if self.id in self.needs:
             raise ValueError(
                 f"gate {self.id!r} lists itself in needs — a self-need can "
@@ -166,6 +180,19 @@ def validate_gates(gates: Iterable[Gate]) -> tuple[Gate, ...]:
                     f"be unique in the set"
                 )
             gate_id_by_value[value] = gate.id
+
+    # ADR-0006 d.2 safety: a gate must never persist an output into its own
+    # satisfied_column — a non-1 metadata value would silently clobber the
+    # checkmark the daemon writes in the same txn. Rejected here so the
+    # bad state is unrepresentable, not merely unreached by shipped gates.
+    for gate in ordered_gates:
+        if gate.satisfied_column in gate.persists.values():
+            raise ValueError(
+                f"gate {gate.id!r} persists an output into its own "
+                f"satisfied_column {gate.satisfied_column!r} — the daemon writes "
+                f"the checkmark there in the same txn, so a persisted value "
+                f"would clobber it (ADR-0006 d.2)"
+            )
 
     order_by_gate_id = {gate.id: gate.order for gate in ordered_gates}
     for gate in ordered_gates:

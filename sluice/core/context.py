@@ -25,23 +25,39 @@ class RunContext:
     plan ⚑5, daemon-only caller model) and no destination/remote path fields
     (Plan B). Carrying ``db_path`` does not license gate-side run-state
     writes — ADR-0002, reachable ≠ permitted.
+
+    ``run_row`` is the ADR-0006 d.3 gate read path: a sealed read-only snapshot
+    of the run row, so a resuming gate reads its own prior tokens (experiment
+    id, globus task id) from ``context.run_row`` without a DB touch — carrying
+    ``db_path`` still does not license a gate write (ADR-0002). The field is
+    OPTIONAL with a sealed empty default: direct constructions that omit it
+    stay valid, and ``resolve_context`` fills it on the production path.
     """
 
     workdir: pathlib.Path
     db_path: pathlib.Path
     config: Mapping[str, object]
+    run_row: Mapping[str, object] = types.MappingProxyType({})
 
     def __post_init__(self) -> None:
-        """Seal ``config`` as a read-only snapshot of the mapping passed in.
+        """Seal ``config`` and ``run_row`` as read-only snapshots of the mappings passed in.
 
         ``frozen=True`` only stops field rebinding; a live shared dict would
-        let one gate rewrite config for every other gate — a second mutable
-        in-memory authority the spine forbids (plan 04 §3.1). The ``dict``
-        copy detaches from the caller's mapping; the ``MappingProxyType``
-        wrapper makes item writes and deletes raise ``TypeError``. Rebinding
-        goes through ``object.__setattr__`` because the instance is frozen.
+        let one gate rewrite config (or the run-row snapshot) for every other
+        gate — a second mutable in-memory authority the spine forbids (plan 04
+        §3.1). The ``dict`` copy detaches from the caller's mapping; the
+        ``MappingProxyType`` wrapper makes item writes and deletes raise
+        ``TypeError``. Rebinding goes through ``object.__setattr__`` because the
+        instance is frozen.
+
+        The ``run_row`` seal only ever receives a PLAIN dict, never a raw
+        ``sqlite3.Row`` (``dict(<Row>)`` raises — a ``Row`` iterates values,
+        not items): a direct construction passes a plain dict (or omits it →
+        the empty-proxy default), and ``resolve_context`` pre-converts the
+        ``Row`` with a keyed comprehension before it ever reaches here.
         """
         object.__setattr__(self, "config", types.MappingProxyType(dict(self.config)))
+        object.__setattr__(self, "run_row", types.MappingProxyType(dict(self.run_row)))
 
 
 def resolve_context(run_row, config: Mapping[str, object]) -> RunContext:
@@ -56,6 +72,13 @@ def resolve_context(run_row, config: Mapping[str, object]) -> RunContext:
     never ``.get`` with a default (guardrail §8), and the name is validated as
     a single safe path component before it becomes a path (§3.3) — this is
     the boundary where a stored string identity turns into a filesystem path.
+
+    The run row is snapshotted onto the context (ADR-0006 d.3): a resuming gate
+    reads its prior tokens (experiment id, globus task id) off
+    ``context.run_row`` with no DB touch. The snapshot is built here by a keyed
+    comprehension — ``dict(run_row)`` is WRONG for a ``sqlite3.Row`` (it
+    iterates values, not items, and raises), so keys are read explicitly — so
+    the ``RunContext`` seal only ever receives a plain dict.
 
     Raises:
         KeyError: If ``config`` lacks ``local_staging_dir`` or ``state_file``.
@@ -77,8 +100,13 @@ def resolve_context(run_row, config: Mapping[str, object]) -> RunContext:
             'it must not contain "/" or "\\" and must not equal "", ".", '
             'or ".." (plan 04 §3.3)'
         )
+    # Keyed comprehension, not dict(run_row): a sqlite3.Row iterates values,
+    # not items, so dict(<Row>) raises — build the plain-dict snapshot the
+    # RunContext seal expects (ADR-0006 d.3).
+    run_snapshot = {key: run_row[key] for key in run_row.keys()}
     return RunContext(
         workdir=pathlib.Path(config["local_staging_dir"]) / run_name,
         db_path=pathlib.Path(config["state_file"]),
         config=config,
+        run_row=run_snapshot,
     )

@@ -153,19 +153,23 @@ def test_context_derives_no_path_from_dunder_file():
     )
 
 
-def test_run_context_fields_are_exactly_workdir_db_path_config():
-    """``RunContext``'s field set is exactly ``[workdir, db_path, config]``, all required.
+def test_run_context_fields_are_exactly_workdir_db_path_config_run_row():
+    """``RunContext``'s field set is exactly ``[workdir, db_path, config, run_row]``.
 
     This one test carries facts 1 and 2 (plan 04 §2): no notifier field (the
     daemon-only caller model — events plan ⚑5 APPROVED — supersedes spec §6's
     "notifier" line), and no destination/remote path fields (``raw_seqs_dir``,
-    ``nvd_launch_dir``, … are named Plan B deferrals). The set is LEAN and
-    CLOSED: adding any field — a notifier reversal or a Plan B path — must
-    edit this list consciously, as a visible contract change backed by a plan
-    revision or ADR, never as a quiet extra field. "All required" matters
-    too: a defaulted field would let a context be constructed with a
-    silently-assumed value, the exact silent-fallback pattern guardrail §8
-    forbids.
+    ``nvd_launch_dir``, … are named Plan B deferrals). The fourth field
+    ``run_row`` is the ADR-0006 d.3 read-path snapshot — a conscious contract
+    change with the same governance as the gate field-pin (ADR-0006 d.1). The
+    set is LEAN and CLOSED: adding any further field — a notifier reversal or a
+    Plan B path — must edit this list consciously, backed by a plan revision or
+    ADR, never as a quiet extra field. The first THREE stay required (no
+    default): a defaulted ``config``/``workdir``/``db_path`` would let a context
+    be constructed on a silently-assumed value (guardrail §8). ``run_row`` is
+    deliberately optional with a sealed empty default (ADR-0006 finding 1) so a
+    context resolved before any token exists — and the two direct constructions
+    below — need not name it.
     """
     # Local import: context is the module under construction (same rationale
     # as the import-hygiene test above).
@@ -177,25 +181,26 @@ def test_run_context_fields_are_exactly_workdir_db_path_config():
         "workdir",
         "db_path",
         "config",
+        "run_row",
     ], (
-        "RunContext's field set is the closed Plan A contract: exactly "
-        "workdir, db_path, config (plan 04 facts 1-2). No notifier (events "
-        "plan ⚑5), no destination/remote path fields (Plan B). Changing this "
-        "set requires a plan revision or ADR."
+        "RunContext's field set is the closed contract: workdir, db_path, "
+        "config (plan 04 facts 1-2) plus run_row (ADR-0006 d.3 read path). No "
+        "notifier (events plan ⚑5), no destination/remote path fields "
+        "(Plan B). Changing this set requires a plan revision or ADR."
     )
 
-    fields_with_defaults = [
-        field.name
-        for field in declared_fields
-        if field.default is not dataclasses.MISSING
-        or field.default_factory is not dataclasses.MISSING
-    ]
-    assert fields_with_defaults == [], (
-        f"RunContext fields {fields_with_defaults} have defaults — all three "
-        "fields are required (plan 04 unit 1): a defaulted field would let a "
-        "context be built on a silently-assumed value (guardrail §8, no "
-        "silent fallbacks)."
-    )
+    fields_by_name = {field.name: field for field in declared_fields}
+    # The first three stay strictly required — a defaulted one would license a
+    # silent fallback (guardrail §8).
+    for required_field_name in ("workdir", "db_path", "config"):
+        assert fields_by_name[required_field_name].default is dataclasses.MISSING
+        assert (
+            fields_by_name[required_field_name].default_factory is dataclasses.MISSING
+        )
+    # run_row is optional with a sealed empty-mapping default (ADR-0006 d.3 /
+    # finding 1): the read-path snapshot is filled by resolve_context, so a
+    # direct construction that omits it must stay valid.
+    assert len(fields_by_name["run_row"].default) == 0
 
 
 def test_run_context_is_frozen():
@@ -257,6 +262,41 @@ def test_run_context_config_is_read_only():
         "ctx.config reflected a post-construction mutation of the caller's "
         "dict — config must be snapshotted at construction (plan 04 unit 1), "
         "not aliased to a live shared mapping."
+    )
+
+
+def test_run_row_snapshot_is_sealed_and_detached():
+    """``ctx.run_row`` rejects item mutation and is detached from the source dict.
+
+    ADR-0006 d.3 seal, the sibling of the config seal: the run-row snapshot must
+    not become a second mutable in-memory authority (the DB is the single source
+    of truth). Constructed DIRECTLY with a PLAIN dict (never a raw
+    ``sqlite3.Row`` — that path flows through ``resolve_context``): item writes
+    raise ``TypeError`` (the ``MappingProxyType`` wrapper), and a later mutation
+    of the caller's dict does not show through (the ``dict(run_row)`` copy).
+    """
+    # Local import: context is the module under construction (same rationale
+    # as the import-hygiene test above).
+    from sluice.core.context import RunContext
+
+    original_run_row = {"experiment_id": 4242}
+    context = RunContext(
+        workdir=pathlib.Path("/staging/run_A"),
+        db_path=pathlib.Path("data/sluice_state.db"),
+        config=make_config(),
+        run_row=original_run_row,
+    )
+
+    with pytest.raises(TypeError):
+        context.run_row["experiment_id"] = 9  # type: ignore[index]
+
+    # Snapshot isolation: mutating the source dict after construction must not
+    # reach inside the frozen record.
+    original_run_row["experiment_id"] = 9999
+    assert context.run_row["experiment_id"] == 4242, (
+        "ctx.run_row reflected a post-construction mutation of the caller's "
+        "dict — the run-row snapshot must be sealed at construction (ADR-0006 "
+        "d.3), not aliased to a live shared mapping."
     )
 
 
@@ -461,19 +501,23 @@ def test_resolve_context_rejects_a_traversing_run_name(traversing_name):
     )
 
 
-def test_resolve_context_ignores_resume_tokens():
-    """A row with resume tokens set resolves equal to the same row with them NULL or absent.
+def test_resolve_context_derivation_ignores_resume_tokens():
+    """The path DERIVATION ignores resume tokens; ADR-0006 d.3 now snapshots them onto run_row.
 
     Fact 4 / errata A5 (plan 04 §2): the non-recomputable persisted set is
     {``globus_task_id``, ``slack_thread_ts``} — Globus- and Slack-assigned
-    handles that stay in the run row for Plan B's resume/monitoring reads.
-    resolve_context neither carries nor recomputes them; the derivation reads
-    exactly one row column, ``name``. The regression this catches is a token
-    leaking into the derivation — folded into a path, or stashed into the
-    carried config — which would make the context depend on externally-assigned
-    state and so diverge between a fresh run (tokens NULL) and a resumed one
-    (tokens set), breaking spec §6's resume guarantee that a restarted daemon
-    rebuilds the identical context from the row alone.
+    handles that stay in the run row for Plan B's resume/monitoring reads. The
+    original invariant here (full-context equality across rows differing only in
+    tokens) is DELIBERATELY superseded by ADR-0006 d.3: ``resolve_context`` now
+    carries a sealed snapshot of the whole run row so a resuming gate reads its
+    prior tokens off ``context.run_row`` with no DB touch — carrying the token
+    is the point, not a leak. What still must hold is the narrower, permanent
+    guarantee: the path DERIVATION (``workdir``/``db_path``) reads exactly one
+    column, ``name``, and never folds a token into a path — so all three rows
+    below derive the SAME workdir/db_path — while ``run_row`` faithfully
+    reflects whatever each row carried. The spec §6 resume guarantee (a
+    restarted daemon rebuilds the identical context from the SAME row) is pinned
+    by ``test_resolve_context_is_deterministic``.
     """
     # Local import: resolve_context is the unit under construction (same
     # rationale as the happy-path test above).
@@ -483,7 +527,7 @@ def test_resolve_context_ignores_resume_tokens():
 
     # The same run three ways: tokens set (a resumed run), tokens NULL (a
     # fresh run, as sqlite3.Row would present unset columns), keys absent
-    # entirely. All three must resolve to EQUAL contexts.
+    # entirely.
     row_with_tokens_set = {
         "name": "run_A",
         "globus_task_id": "task-xyz",
@@ -500,14 +544,36 @@ def test_resolve_context_ignores_resume_tokens():
     context_from_null_tokens = resolve_context(row_with_null_tokens, config)
     context_from_absent_keys = resolve_context(row_without_token_keys, config)
 
-    assert (
-        context_from_set_tokens == context_from_null_tokens == context_from_absent_keys
-    ), (
-        "resolve_context produced different RunContexts depending on the "
-        "resume tokens (globus_task_id/slack_thread_ts) — the tokens are "
-        "externally assigned, non-recomputable row state read directly by "
-        "Plan B; the derivation must read only row['name'] and never carry "
-        "or recompute them (plan 04 fact 4, errata A5)."
+    # The path derivation ignores the tokens: same workdir and db_path across
+    # all three rows (the tokens never fold into a path).
+    workdirs = {
+        context_from_set_tokens.workdir,
+        context_from_null_tokens.workdir,
+        context_from_absent_keys.workdir,
+    }
+    db_paths = {
+        context_from_set_tokens.db_path,
+        context_from_null_tokens.db_path,
+        context_from_absent_keys.db_path,
+    }
+    assert workdirs == {pathlib.Path("/staging/run_A")} and db_paths == {
+        pathlib.Path("data/sluice_state.db")
+    }, (
+        "resolve_context folded a resume token into workdir/db_path — the path "
+        "derivation must read only row['name'] (plan 04 fact 4, errata A5); "
+        "tokens ride on the run_row snapshot, never the derived paths."
+    )
+
+    # ADR-0006 d.3: the snapshot faithfully carries whatever the row held —
+    # a set token is present, an absent key stays absent.
+    assert context_from_set_tokens.run_row["globus_task_id"] == "task-xyz", (
+        "resolve_context must snapshot a set resume token onto run_row so a "
+        "resuming gate reads it with no DB touch (ADR-0006 d.3)."
+    )
+    assert "globus_task_id" not in context_from_absent_keys.run_row, (
+        "resolve_context must snapshot exactly the row's keys — it must not "
+        "fabricate a token key the row never carried (ADR-0006 d.3; no "
+        "fabrication of persisted state, plan 04 fact 4, errata A5)."
     )
 
 
@@ -590,6 +656,52 @@ def test_resolve_context_reads_a_real_sqlite_row(tmp_path):
     assert ctx.db_path == pathlib.Path(config["state_file"]), (
         "db_path must come from config['state_file'] regardless of row type "
         "(plan 04 fact 3 — the db path travels as a field)."
+    )
+
+
+def test_resolve_context_captures_run_row_snapshot(tmp_path):
+    """``resolve_context`` snapshots a real ``sqlite3.Row`` onto ``ctx.run_row`` (ADR-0006 d.3).
+
+    The load-bearing conversion proof: ``resolve_context`` is the ONE place a
+    real ``sqlite3.Row`` becomes the run-row snapshot, and it must do so with a
+    keyed comprehension (``dict(<Row>)`` raises — a ``Row`` iterates values, not
+    items). A run inserted with ``experiment_id=4242`` yields a context whose
+    ``run_row`` carries both the identity token and the run ``name``, readable
+    off the context with no further DB touch — the exact resume read a future
+    gate performs (globus task id, experiment id).
+    """
+    # Local imports: the db primitives are this proof's substrate only.
+    from sluice.core.context import resolve_context
+    from sluice.core.db import get_connection, get_run, initialize_database, insert_run
+
+    db_path = tmp_path / "sluice_state.db"
+    initialize_database(db_path)
+    connection = get_connection(db_path)
+    try:
+        insert_run(connection, "run_A", pipeline_version="v1", experiment_id=4242)
+        row = get_run(connection, "run_A")
+    finally:
+        connection.close()
+
+    # The real substrate, not a double: get_run hands back a sqlite3.Row.
+    assert isinstance(row, sqlite3.Row)
+
+    config = make_config(
+        local_staging_dir=str(tmp_path / "staging"),
+        state_file=str(db_path),
+    )
+
+    ctx = resolve_context(row, config)
+
+    assert ctx.run_row["experiment_id"] == 4242, (
+        "resolve_context must snapshot the row's experiment_id onto "
+        "ctx.run_row — the ADR-0006 d.3 resume read (a gate reads its prior "
+        "token off the context, no DB touch)."
+    )
+    assert ctx.run_row["name"] == "run_A", (
+        "the run name must survive the keyed-comprehension Row conversion — "
+        "dict(<sqlite3.Row>) would have raised, so the snapshot proves the "
+        "conversion is keyed (ADR-0006 d.3)."
     )
 
 

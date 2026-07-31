@@ -147,8 +147,8 @@ def test_gate_result_reason_is_optional_for_every_non_failure_outcome():
     assert GateResult(GateOutcome.SKIPPED).reason is None
 
 
-def test_gate_contract_fields_are_exactly_the_spec_ten():
-    """The ``Gate`` record carries exactly the ten contract fields, in order.
+def test_gate_contract_fields_are_exactly_the_spec_eleven():
+    """The ``Gate`` record carries exactly the eleven contract fields, in order.
 
     This one equality carries three errata (plan 02 unit 3): no
     ``retryable``/``max_attempts`` (B4 — ADR-0002 quarantines every failure),
@@ -156,8 +156,11 @@ def test_gate_contract_fields_are_exactly_the_spec_ten():
     ADR-0004, subsystem 5), and no ``timeout_seconds`` (B6 — deferred until the
     change that builds its enforcement). ``needs`` and ``produces`` have NO
     default: a gate author must state dependencies explicitly, because a
-    silently-defaulted ``needs=()`` is the B3 deadlock's cousin. Editing this
-    test is a conscious contract change requiring an ADR or plan revision.
+    silently-defaulted ``needs=()`` is the B3 deadlock's cousin. The eleventh
+    field ``persists`` is the ADR-0006 d.1 contract change (same governance as
+    the ADR-0002/0004/0005 pins): a defaulted, sealed metadata-key→column map
+    the daemon copies onto ``runs`` on SUCCESS. Editing this test is a
+    conscious contract change requiring an ADR or plan revision.
     """
     # Local import: Gate is the unit under construction; a module-level import
     # would fail collection for the already-green unit-1/2 tests.
@@ -175,11 +178,15 @@ def test_gate_contract_fields_are_exactly_the_spec_ten():
         "invalidate",
         "terminate",
         "control_point",
+        "persists",
     ]
 
     fields_by_name = {field.name: field for field in gate_fields}
     assert fields_by_name["terminate"].default is None
     assert fields_by_name["control_point"].default is True
+    # ADR-0006 d.1: persists defaults to an empty mapping (an empty proxy), so
+    # every existing gate that omits it keeps a no-op persist declaration.
+    assert len(fields_by_name["persists"].default) == 0
     # No default of either kind: a default_factory would also let an author
     # omit needs/produces, so both slots must be MISSING.
     for required_field_name in ("needs", "produces"):
@@ -187,6 +194,43 @@ def test_gate_contract_fields_are_exactly_the_spec_ten():
         assert (
             fields_by_name[required_field_name].default_factory is dataclasses.MISSING
         )
+
+
+def test_persists_is_sealed_read_only_and_detached():
+    """``gate.persists`` is a read-only snapshot detached from the author's dict.
+
+    The one behavioral pin for ADR-0006 d.1's sluice-specific sealing choice
+    (it does NOT re-prove that a mapping stores values): ``persists`` carries
+    the declared values, item writes raise ``TypeError`` (the
+    ``MappingProxyType`` seal), and mutating the *source* dict after
+    construction never reaches inside the frozen gate — a shared dict must not
+    be able to rewrite a gate's persist behavior (same guard the ``RunContext``
+    config seal carries).
+    """
+    from sluice.core.gate import Gate, GateOutcome, GateResult
+
+    source = {"k": "experiment_id"}
+    gate = Gate(
+        id="probe",
+        name="Probe",
+        satisfied_column="mock_alpha_done",
+        order=1,
+        needs=(),
+        produces=(),
+        run=lambda context: GateResult(GateOutcome.SUCCESS),
+        invalidate=lambda context: None,
+        persists=source,
+    )
+
+    assert gate.persists == {"k": "experiment_id"}
+
+    with pytest.raises(TypeError):
+        gate.persists["k"] = "x"  # type: ignore[index]
+
+    # Detachment: a post-construction mutation of the caller's dict must not
+    # show through the frozen gate (the dict(persists) copy).
+    source["k"] = "globus_task_id"
+    assert gate.persists["k"] == "experiment_id"
 
 
 def test_gate_result_rejects_a_non_outcome():
@@ -375,6 +419,33 @@ def test_validate_gates_rejects_a_need_that_does_not_precede():
     message = str(raised.value)
     assert "download" in message
     assert "registration" in message
+
+
+def test_validate_gates_rejects_persisting_into_own_satisfied_column():
+    """``validate_gates`` refuses a gate that persists an output into its own satisfied_column.
+
+    ADR-0006 d.2 made structural: the daemon writes the checkmark (``= 1``) and
+    every declared ``persists`` output in ONE txn, so a gate mapping a metadata
+    key onto its OWN ``satisfied_column`` could carry a non-1 value that
+    silently clobbers the completion marker. Rejected at registry construction —
+    the bad state is unrepresentable, not merely unreached by shipped gates —
+    with a message naming the gate id and the offending column.
+    """
+    from sluice.core.gate import validate_gates
+
+    self_clobbering = make_gate(
+        id="clobber",
+        satisfied_column="clobber_done",
+        order=1,
+        persists={"k": "clobber_done"},
+    )
+
+    with pytest.raises(ValueError) as raised:
+        validate_gates([self_clobbering])
+
+    message = str(raised.value)
+    assert "clobber" in message
+    assert "clobber_done" in message
 
 
 def test_gate_exports_exactly_the_documented_surface():
