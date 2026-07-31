@@ -3,6 +3,7 @@
 
   "remote_user": "<remote-ssh-user>",
   "remote_host": "<remote-sequencing-host>",
+  "remote_source_path": "<remote-path-to-list-usually-.>",
   "password_file": "<path/to/remote_password_file>",
   "local_source_dir": "<optional/path/to/local_source_or_empty>",
   "local_staging_dir": "<path/to/local_staging_dir>",

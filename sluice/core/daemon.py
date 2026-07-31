@@ -63,6 +63,7 @@ __all__ = [
     "process_run",
     "run_cycle",
     "run_forever",
+    "watch_dir_lister",
 ]
 
 # One module logger for the daemon's own vocabulary (plan 09 §3.10); the three
@@ -187,35 +188,103 @@ def prepare_database(config, *, registry, default_pipeline_version):
     return db_path
 
 
-def detect_new_runs(config, *, notifier=None) -> list[str]:
-    """List the watch directory's subdirectories and insert each unseen run once.
+def watch_dir_lister(config) -> list[tuple[str, float | None]]:
+    """List the immediate subdirectories of ``watch_dir`` as sized candidates.
 
-    Detection (§3.2): the immediate *subdirectories* of ``watch_dir`` (files
-    ignored), sorted by name; each unseen name is inserted in ONE ``write_txn``
-    with ``pipeline_version`` stamped from ``metadata.pipeline_profile`` read in
-    that same transaction — the ONLY moment the active default is read for a
-    run (§8 freeze). ``insert_run``'s idempotent bool gates the post-commit
-    ``run.detected`` line and ``open_run_thread`` notify, so a re-sweep is
-    silent.
+    The reference/test detection source (plan 11 unit 1): the default lister when
+    ``detect_new_runs`` is given none, preserving the Plan-A watch-directory
+    sweep byte-for-byte. Files are ignored; each subdirectory becomes a
+    ``(name, None)`` tuple (the watch-dir sweep never sizes a run — only the
+    remote lister carries a ``size_tb``), sorted by name.
 
     Args:
-        config: the loaded config; ``watch_dir`` and ``state_file`` by subscript.
+        config: the loaded config; ``watch_dir`` by subscript.
+
+    Returns:
+        ``(name, None)`` tuples for every immediate subdirectory, sorted by name.
+
+    Raises:
+        KeyError: ``config`` lacks ``watch_dir``.
+    """
+    watch_dir = config["watch_dir"]
+    return sorted(
+        (
+            (entry.name, None)
+            for entry in pathlib.Path(watch_dir).iterdir()
+            if entry.is_dir()
+        ),
+        key=lambda candidate: candidate[0],
+    )
+
+
+def detect_new_runs(config, *, lister=None, notifier=None) -> list[str]:
+    """List detection candidates via ``lister`` and insert each unseen run once.
+
+    Detection (§3.2, plan 11): the injected ``lister`` (default
+    ``watch_dir_lister``) yields ``(name, size_tb)`` candidates, called exactly
+    once **before and outside any transaction** so a network listing never holds
+    a ``write_txn`` (§5). Candidates are sorted by **name only** (never
+    whole-tuple — comparing ``None`` with a ``float`` on a duplicate name would
+    raise ``TypeError``); any name failing ``_is_safe_path_component`` is dropped
+    with one ``detection.unsafe_name`` error event so a garbled listing cannot
+    mint a run named ``..``. In ONE ``write_txn`` each surviving unseen name is
+    inserted with ``pipeline_version`` stamped from ``metadata.pipeline_profile``
+    read in that same transaction (§8 freeze) and its ``size_tb`` on the row.
+    ``insert_run``'s idempotent bool gates the post-commit ``run.detected`` line
+    and ``open_run_thread`` notify, so a re-sweep is silent. A lister that raises
+    degrades to zero candidates plus one ``detection.failed`` event (the D4
+    fail-open posture) — except a ``KeyError`` (missing config key = deployment
+    bug), which fails loud.
+
+    Args:
+        config: the loaded config; ``state_file`` by subscript (and ``watch_dir``
+            only when the default lister is used).
+        lister: optional ``config -> [(name, size_tb), ...]`` detection source;
+            ``None`` selects ``watch_dir_lister``.
         notifier: optional milestone notifier; called via ``safe_notify``.
 
     Returns:
         The genuinely-new run names, sorted.
 
     Raises:
-        KeyError: ``config`` lacks ``watch_dir`` or ``state_file``.
+        KeyError: ``config`` lacks a key the active lister or ``state_file``
+            requires — a deployment bug that fails loud (the lister's ``KeyError``
+            is deliberately re-raised, never contained).
         RuntimeError: ``metadata.pipeline_profile`` is unseeded — only reachable
             if ``prepare_database`` was skipped; names the missing key.
     """
     db_path = config["state_file"]
-    watch_dir = config["watch_dir"]
+    active_lister = lister or watch_dir_lister
     # List before the transaction so the write_txn stays short (§5).
-    subdirectory_names = sorted(
-        entry.name for entry in pathlib.Path(watch_dir).iterdir() if entry.is_dir()
-    )
+    try:
+        candidates = active_lister(config)
+    except KeyError:
+        # A missing config key is a deployment bug — fail loud, matching this
+        # function's existing Raises: KeyError contract (plan 11 unit 2).
+        raise
+    except Exception as listing_error:  # noqa: BLE001 — fail-open (D4/D1 posture)
+        # Any other lister failure degrades to zero candidates plus one event;
+        # a missing rsync/sshpass binary (FileNotFoundError) lands here too — an
+        # intended fail-open path, NOT loud propagation (plan 11 unit 2 / clar 4).
+        log.error(
+            "detection.failed",
+            **{
+                "error.type": type(listing_error).__name__,
+                "error.message": str(listing_error),
+            },
+        )
+        return []
+
+    # Sort by name only — never a whole-tuple sort (None vs float raises).
+    sorted_candidates = sorted(candidates, key=lambda candidate: candidate[0])
+    safe_candidates: list[tuple[str, float | None]] = []
+    for name, size_tb in sorted_candidates:
+        if _is_safe_path_component(name):
+            safe_candidates.append((name, size_tb))
+        else:
+            # A garbled/malicious listing must never mint a run named ``..``.
+            log.error("detection.unsafe_name", **{"detection.rejected_name": name})
+
     newly_detected: list[str] = []
     with write_txn(db_path) as connection:
         default_pipeline_version = get_metadata(
@@ -227,8 +296,13 @@ def detect_new_runs(config, *, notifier=None) -> list[str]:
                 f"detection needs the active-default profile; run "
                 f"prepare_database first (plan 09 §3.2)"
             )
-        for name in subdirectory_names:
-            if insert_run(connection, name, pipeline_version=default_pipeline_version):
+        for name, size_tb in safe_candidates:
+            if insert_run(
+                connection,
+                name,
+                pipeline_version=default_pipeline_version,
+                size_tb=size_tb,
+            ):
                 newly_detected.append(name)
     # Post-commit only (persist-then-emit): the rows exist before any line or
     # notify describes them.
@@ -444,6 +518,7 @@ def run_cycle(
     registry,
     notifier=None,
     disk_floor_check: Callable[[Mapping], str | None] | None = None,
+    lister=None,
     should_stop=None,
 ) -> dict:
     """Run one full look: pause head-check → disk floor → detect → per-run drive.
@@ -463,6 +538,8 @@ def run_cycle(
         notifier: optional milestone notifier.
         disk_floor_check: optional ``config -> reason|None`` seam; a reason
             string trips the auto-pause.
+        lister: optional detection-source seam handed straight to
+            ``detect_new_runs`` (``None`` = the watch-dir default).
         should_stop: optional zero-arg predicate checked between runs and passed
             through to each ``process_run``.
 
@@ -499,7 +576,7 @@ def run_cycle(
             log.error("daemon.paused", **{"daemon.reason": reason})
             return {"status": "disk-paused", "detected": [], "runs": {}}
 
-    detected = detect_new_runs(config, notifier=notifier)
+    detected = detect_new_runs(config, lister=lister, notifier=notifier)
 
     selection_connection = get_connection(db_path)
     try:
@@ -598,6 +675,7 @@ def run_forever(
     default_pipeline_version,
     notifier=None,
     disk_floor_check: Callable[[Mapping], str | None] | None = None,
+    lister=None,
     max_cycles: int | None = None,
 ) -> None:
     """Take the lock, prepare state, then run cycles until shutdown or ``max_cycles``.
@@ -618,6 +696,8 @@ def run_forever(
         default_pipeline_version: the deployment default seeded on a fresh DB.
         notifier: optional milestone notifier.
         disk_floor_check: optional disk-floor seam (see ``run_cycle``).
+        lister: optional detection-source seam passed through each ``run_cycle``
+            (``None`` = the watch-dir default).
         max_cycles: run at most this many cycles then stop (``None`` = forever).
 
     Raises:
@@ -651,6 +731,7 @@ def run_forever(
                 registry=registry,
                 notifier=notifier,
                 disk_floor_check=disk_floor_check,
+                lister=lister,
                 should_stop=shutdown_event.is_set,
             )
             cycles_run += 1

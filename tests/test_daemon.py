@@ -1334,3 +1334,202 @@ def test_exclusion_remediates_a_stuck_run(prepared):
     result = run_cycle(prepared, registry=REFERENCE_PROFILES)
     assert result["runs"]["run1"] == "completed"
     assert _run_row(prepared, "run1")["mock_beta_done"] == 0
+
+
+# --------------------------------------------------------------------------
+# Plan 11 — the detection-source seam (injected lister + failure containment).
+# --------------------------------------------------------------------------
+
+
+def _fixed_lister(candidates):
+    """A lister returning a fixed candidate list, ignoring config."""
+
+    def _lister(config):
+        return list(candidates)
+
+    return _lister
+
+
+def test_detect_new_runs_uses_injected_lister_and_stamps_size_tb(prepared):
+    """An injected lister supplies ``(name, size_tb)`` and needs no ``watch_dir``.
+
+    A config copy WITHOUT ``watch_dir`` plus a lister returning a duplicate pair
+    inserts one row per distinct name, stamps ``size_tb`` from the lister and the
+    active-default ``pipeline_version`` from metadata (read back, not a literal),
+    and emits exactly one ``run.detected`` per name (the duplicate is silenced by
+    ``insert_run``'s idempotent bool).
+    """
+    no_watch = dict(prepared)
+    del no_watch["watch_dir"]
+    lister = _fixed_lister([("runB", 1.25), ("runA", None), ("runB", 1.25)])
+
+    with structlog.testing.capture_logs() as captured:
+        detected = detect_new_runs(no_watch, lister=lister)
+
+    assert detected == ["runA", "runB"]
+    stamp = None
+    connection = get_connection(no_watch["state_file"])
+    try:
+        stamp = get_metadata(connection, control.PIPELINE_PROFILE_KEY)
+    finally:
+        connection.close()
+    assert _run_row(no_watch, "runB")["size_tb"] == 1.25
+    assert _run_row(no_watch, "runA")["size_tb"] is None
+    assert _run_row(no_watch, "runA")["pipeline_version"] == stamp
+    assert _run_row(no_watch, "runB")["pipeline_version"] == stamp
+
+    detected_lines = _events_named(captured, "run.detected")
+    assert sorted(line["run.name"] for line in detected_lines) == ["runA", "runB"]
+
+
+def test_detect_new_runs_rejects_unsafe_candidate_names(prepared):
+    """An unsafe candidate name is dropped with one error event; no row is minted.
+
+    A lister emitting ``../evil`` never mints a run named ``..`` — it is skipped
+    with one ``detection.unsafe_name`` event carrying the rejected name, and only
+    the safe candidate lands.
+    """
+    lister = _fixed_lister([("../evil", None), ("ok_run", None)])
+
+    with structlog.testing.capture_logs() as captured:
+        detected = detect_new_runs(prepared, lister=lister)
+
+    assert detected == ["ok_run"]
+    unsafe = _events_named(captured, "detection.unsafe_name")
+    assert len(unsafe) == 1
+    assert unsafe[0]["detection.rejected_name"] == "../evil"
+
+    connection = get_connection(prepared["state_file"])
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
+def test_detect_new_runs_calls_lister_outside_any_write_transaction(prepared):
+    """The lister runs before the insert txn opens — it may itself write the DB.
+
+    A lister that opens ``write_txn`` on the same DB and writes a probe key
+    succeeds and that key reads back; a ``detect_new_runs`` holding its write
+    transaction across the lister call would deadlock here (the
+    short-transaction invariant, made executable).
+    """
+
+    def probing_lister(config):
+        with write_txn(config["state_file"]) as connection:
+            set_metadata(connection, "probe", "x")
+        return []
+
+    detected = detect_new_runs(prepared, lister=probing_lister)
+
+    assert detected == []
+    connection = get_connection(prepared["state_file"])
+    try:
+        assert get_metadata(connection, "probe") == "x"
+    finally:
+        connection.close()
+
+
+def test_detection_failure_degrades_to_zero_candidates_and_one_event(prepared):
+    """A raising lister degrades to zero candidates plus one ``detection.failed``.
+
+    The D4 fail-open posture: an unreachable remote returns ``[]`` with exactly
+    one error event naming the exception type, and inserts no rows.
+    """
+
+    def raising_lister(config):
+        raise RuntimeError("connection closed by remote")
+
+    with structlog.testing.capture_logs() as captured:
+        detected = detect_new_runs(prepared, lister=raising_lister)
+
+    assert detected == []
+    failed = _events_named(captured, "detection.failed")
+    assert len(failed) == 1
+    assert failed[0]["error.type"] == "RuntimeError"
+
+    connection = get_connection(prepared["state_file"])
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_detection_failure_does_not_stop_the_cycle(prepared):
+    """A detection failure never kills the cycle — pre-existing runs still drive.
+
+    Seed a run via the watch-dir path, then run a cycle with a raising lister:
+    ``detected`` is empty but the pre-existing run still appears in ``runs``.
+    """
+    _detect(prepared, "existing")
+
+    def raising_lister(config):
+        raise RuntimeError("df blew up on the remote")
+
+    result = run_cycle(prepared, registry=REFERENCE_PROFILES, lister=raising_lister)
+
+    assert result["detected"] == []
+    assert "existing" in result["runs"]
+
+
+def test_detection_config_keyerror_still_fails_loud(prepared):
+    """A lister ``KeyError`` (missing config key) propagates — fail loud, not open."""
+
+    def keyerror_lister(config):
+        raise KeyError("password_file")
+
+    with pytest.raises(KeyError, match="password_file"):
+        detect_new_runs(prepared, lister=keyerror_lister)
+
+
+def test_run_cycle_passes_lister_through(prepared):
+    """``run_cycle`` hands its ``lister`` to ``detect_new_runs`` unchanged."""
+    lister = _fixed_lister([("cycle_run", 3.0)])
+    result = run_cycle(prepared, registry=REFERENCE_PROFILES, lister=lister)
+
+    assert result["detected"] == ["cycle_run"]
+    assert _run_row(prepared, "cycle_run") is not None
+    assert _run_row(prepared, "cycle_run")["size_tb"] == 3.0
+
+
+def test_run_forever_passes_lister_through(config):
+    """``run_forever(max_cycles=1, lister=...)`` detects the injected candidate."""
+    lister = _fixed_lister([("forever_run", 2.5)])
+    run_forever(
+        config,
+        registry=REFERENCE_PROFILES,
+        default_pipeline_version=DEFAULT_VERSION,
+        max_cycles=1,
+        lister=lister,
+    )
+
+    row = _run_row(config, "forever_run")
+    assert row is not None
+    assert row["size_tb"] == 2.5
+    assert row["pipeline_version"] == DEFAULT_VERSION
+
+
+def test_production_stamp_requires_registry_entry_at_startup(config):
+    """``production-v3.1`` cannot be seeded until a registry defines it (the interlock).
+
+    Green against the built ``prepare_database``: pointing the default at
+    ``production-v3.1`` with the reference registry dies as ONE loud startup
+    ``UnknownProfileError`` — nothing is seeded and no run row exists — so the
+    composition root cannot wire production detection wrongly until a later
+    increment adds the profile entry (gate-map caveat 2).
+    """
+    from sluice.core.profile import UnknownProfileError
+
+    with pytest.raises(UnknownProfileError):
+        prepare_database(
+            config,
+            registry=REFERENCE_PROFILES,
+            default_pipeline_version="production-v3.1",
+        )
+
+    connection = get_connection(config["state_file"])
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+        assert get_metadata(connection, control.PIPELINE_PROFILE_KEY) is None
+    finally:
+        connection.close()
