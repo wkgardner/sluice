@@ -2502,11 +2502,13 @@ def test_migration_006_adds_a_nullable_json_checked_excluded_gates(
         )
 
     # The ladder grows to 006; re-initialization applies only the pending one.
-    monkeypatch.setattr(sluice.core.db, "MIGRATIONS", full_migration_ladder)
+    # Sliced to [:6] so this 006-focused test stays isolated from later ladder
+    # growth (Plan B's 007+) — it verifies exactly that 006 applies to a v5 DB.
+    monkeypatch.setattr(sluice.core.db, "MIGRATIONS", full_migration_ladder[:6])
     applied_versions = sluice.core.db.initialize_database(database_path)
     assert applied_versions == [6], (
         "re-initializing a version-5 database must apply exactly migration 6 "
-        f"(the ladder ends at 006 — plan 08 unit 9); applied {applied_versions!r}"
+        f"(this test pins 006 alone — plan 08 unit 9); applied {applied_versions!r}"
     )
 
     with contextlib.closing(

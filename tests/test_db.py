@@ -1077,19 +1077,21 @@ def test_index_migration_applies_to_a_pre_existing_database(tmp_path, monkeypatc
         assert row["pipeline_version"] == "reference-v1"
 
 
-def test_all_six_migrations_yield_version_six_and_every_object(tmp_path):
-    """The full ladder's end state: version 6, all tables and the index present.
+def test_all_migrations_yield_the_top_version_and_every_object(tmp_path):
+    """The full ladder's end state: version 7, all tables and the index present.
 
     Migration 005 (mock gate columns) is subsystem 2's, appended per plan 02
     §3.5; 006 (``excluded_gates``) is subsystem 8's, appended per plan 08
-    unit 9 (⚑2). The end-state literal stays hardcoded — generalizing to
+    unit 9 (⚑2); 007 (``labkey_registered``) is Plan B's ``experiment`` gate,
+    appended per plan 13 Unit 1 (⚑3 — incremental, one satisfaction column per
+    gate). The end-state literal stays hardcoded — generalizing to
     ``max(MIGRATIONS)`` would pin nothing; this test is edited consciously each
     time the ladder grows. ``initialize_database`` on a fresh path reaches
-    ``schema_version == 6`` with ``schema_migrations``, ``runs``,
+    ``schema_version == 7`` with ``schema_migrations``, ``runs``,
     ``poller_metadata``, ``control_audit`` and ``idx_runs_eligible`` all created.
     """
     with initialized_connection(tmp_path / "state.db") as connection:
-        assert sluice.core.db.schema_version(connection) == 6
+        assert sluice.core.db.schema_version(connection) == 7
 
         tables = {
             row["name"]
@@ -1111,6 +1113,51 @@ def test_all_six_migrations_yield_version_six_and_every_object(tmp_path):
             )
         }
         assert "idx_runs_eligible" in indexes
+
+
+# The six OTHER production satisfaction columns (⚑3): each arrives with its own
+# gate in its own migration (008+), NEVER here. Migration 007 adds ONLY
+# ``labkey_registered``; this set is the incremental-migration guard. Names track
+# plan 13 §6's carry-forward (``downloaded``/``checksummed``/… ), distinct from the
+# older placeholder set in ``PRODUCTION_GATE_COLUMNS`` above.
+LATER_PRODUCTION_SATISFACTION_COLUMNS = {
+    "downloaded",
+    "checksummed",
+    "samplesheet_created",
+    "authority_registered",
+    "nvd_completed",
+    "globus_submitted",
+    "clumped_data_backed_up",
+}
+
+
+def test_migration_007_adds_labkey_registered_column(tmp_path):
+    """Migration 007 adds ONLY ``labkey_registered`` as ``INTEGER NOT NULL DEFAULT 0``.
+
+    Plan 13 Unit 1 (⚑3 — incremental): the ``experiment`` gate's satisfaction
+    column lands with its gate, and the other production satisfaction columns do
+    NOT — they each ship with their own gate/migration (008+). ``experiment_id``
+    is not asserted here: it already exists from migration 001 (ADR-0006). The
+    ``NOT NULL DEFAULT 0`` shape keeps reconcile's ``WHERE col = 0`` out of
+    three-valued logic and the ALTER legal on a populated table.
+    """
+    with initialized_connection(tmp_path / "state.db") as connection:
+        info = {
+            row["name"]: row for row in connection.execute("PRAGMA table_info(runs)")
+        }
+
+    assert "labkey_registered" in info, "migration 007 did not add the column"
+    column = info["labkey_registered"]
+    assert column["type"] == "INTEGER"
+    assert column["notnull"] == 1
+    assert column["dflt_value"] == "0"
+
+    # The incremental-migration guard: none of the six OTHER production
+    # satisfaction columns leaked in with 007.
+    leaked = set(info) & LATER_PRODUCTION_SATISFACTION_COLUMNS
+    assert leaked == set(), (
+        f"migration 007 must add labkey_registered ONLY; leaked: {sorted(leaked)}"
+    )
 
 
 # --------------------------------------------------------------------------
