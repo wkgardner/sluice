@@ -33,6 +33,7 @@ from sluice.core.daemon import (
     run_forever,
 )
 from sluice.core.db import (
+    UnknownColumnError,
     get_connection,
     get_metadata,
     get_run,
@@ -903,6 +904,161 @@ def test_progress_writes_are_never_audited(prepared):
     _detect(prepared, "run1")
     assert process_run(prepared, "run1", registry=REFERENCE_PROFILES) == "completed"
     assert _audit_rows(prepared) == []
+
+
+# --------------------------------------------------------------------------
+# Unit 4 (ADR-0006) — the persist choreography. Proven with TEST-LOCAL gate
+# fixtures that declare ``persists`` onto the already-existing whitelisted
+# columns ``experiment_id``/``globus_task_id`` (real since migration 001): no
+# migration, no reference-profile change. The shipped mock_gates/reference-v1
+# stay untouched (Plan A frozen); the real experiment gate is a later increment.
+# --------------------------------------------------------------------------
+
+
+def _single_gate_registry(gate, version="persist-v1"):
+    """Wrap one gate in a one-gate REQUIRED profile keyed by ``version``."""
+    return version, {version: build_profile(version, [(gate, Applicability.REQUIRED)])}
+
+
+def test_success_persists_declared_output_atomically_with_satisfaction(prepared):
+    """A declared persists output and its satisfaction column land in one txn (ADR-0006 d.2).
+
+    A test-local gate with ``persists={"exp": "experiment_id"}`` whose ``run``
+    returns ``SUCCESS`` with ``metadata={"exp": 4242}``. After ``process_run``
+    the committed row carries BOTH ``experiment_id == 4242`` and the gate's
+    ``satisfied_column == 1`` — output and checkmark written together, never
+    apart. ADR-0002 is intact: the gate only RETURNED metadata; the daemon wrote.
+    """
+    persist_gate = Gate(
+        id="persist_gate",
+        name="Persist probe",
+        satisfied_column="mock_alpha_done",
+        order=1,
+        needs=(),
+        produces=(),
+        run=lambda context: GateResult(GateOutcome.SUCCESS, metadata={"exp": 4242}),
+        invalidate=lambda context: None,
+        persists={"exp": "experiment_id"},
+    )
+    version, registry = _single_gate_registry(persist_gate)
+    with write_txn(prepared["state_file"]) as connection:
+        insert_run(connection, "persist_run", pipeline_version=version)
+
+    token = process_run(prepared, "persist_run", registry=registry)
+
+    assert token == "completed"
+    row = _run_row(prepared, "persist_run")
+    assert row["experiment_id"] == 4242
+    assert row["mock_alpha_done"] == 1
+    assert row["errored_at"] is None
+
+
+def test_success_missing_declared_persist_key_quarantines(prepared):
+    """SUCCESS omitting a declared persists key quarantines with nothing partially written.
+
+    Same gate, but ``run`` returns ``SUCCESS`` with ``metadata=None`` (no
+    ``exp`` key). ADR-0006 d.2 fail-loud: ``process_run`` returns
+    ``"quarantined"``, the row's ``errored_at`` is set and ``error_reason``
+    names the missing key ``"exp"``, ``experiment_id`` stays NULL and the
+    satisfaction column stays 0 (the refusal is atomic — output and checkmark
+    move together or not at all), and ``run.finished`` carries ``failed.gate``.
+    """
+    persist_gate = Gate(
+        id="persist_gate",
+        name="Persist probe",
+        satisfied_column="mock_alpha_done",
+        order=1,
+        needs=(),
+        produces=(),
+        run=lambda context: GateResult(GateOutcome.SUCCESS, metadata=None),
+        invalidate=lambda context: None,
+        persists={"exp": "experiment_id"},
+    )
+    version, registry = _single_gate_registry(persist_gate)
+    with write_txn(prepared["state_file"]) as connection:
+        insert_run(connection, "persist_run", pipeline_version=version)
+
+    with structlog.testing.capture_logs() as captured:
+        token = process_run(prepared, "persist_run", registry=registry)
+
+    assert token == "quarantined"
+    row = _run_row(prepared, "persist_run")
+    assert row["errored_at"] is not None
+    assert "exp" in row["error_reason"]
+    # Atomic refusal: neither the output nor the checkmark was written.
+    assert row["experiment_id"] is None
+    assert row["mock_alpha_done"] == 0
+
+    gate_line = _events_named(captured, "gate.finished")[0]
+    assert gate_line["gate.outcome"] == "failure"
+    run_line = _events_named(captured, "run.finished")[0]
+    assert run_line["failed.gate"] == "persist_gate"
+
+
+def test_success_persist_to_unknown_column_fails_loud(prepared):
+    """A persists column absent from the runs whitelist raises UnknownColumnError, fatal.
+
+    A gate mapping onto a non-existent column returns ``SUCCESS`` with the key
+    present, so it clears the missing-key guard and reaches ``update_run`` —
+    whose live whitelist raises ``UnknownColumnError`` (a ``KeyError`` subclass,
+    the injection-defense signal). It PROPAGATES out of ``process_run`` (the
+    catches are call-site-scoped, never around the persist write); the
+    ``write_txn`` rolls back, so neither the satisfaction column nor any partial
+    write lands — a gate-author/deployment bug surfaced honestly (ADR-0006 d.2).
+    """
+    bad_gate = Gate(
+        id="bad_gate",
+        name="Bad-column probe",
+        satisfied_column="mock_alpha_done",
+        order=1,
+        needs=(),
+        produces=(),
+        run=lambda context: GateResult(GateOutcome.SUCCESS, metadata={"x": 1}),
+        invalidate=lambda context: None,
+        persists={"x": "not_a_runs_column"},
+    )
+    version, registry = _single_gate_registry(bad_gate)
+    with write_txn(prepared["state_file"]) as connection:
+        insert_run(connection, "bad_run", pipeline_version=version)
+
+    with pytest.raises(UnknownColumnError):
+        process_run(prepared, "bad_run", registry=registry)
+
+    # The txn rolled back: the satisfaction column never landed.
+    row = _run_row(prepared, "bad_run")
+    assert row["mock_alpha_done"] == 0
+    assert row["errored_at"] is None
+
+
+def test_gate_without_persists_writes_only_satisfaction(prepared):
+    """A default-empty-``persists`` gate writes only its checkmark — the untouched path.
+
+    The regression guard for the shipped mock_gates/reference-v1 path (which
+    declare no ``persists``): a SUCCESS with the default-empty map writes ONLY
+    the satisfaction column — no token column moves. ``experiment_id`` and
+    ``globus_task_id`` stay NULL, exactly as before ADR-0006.
+    """
+    plain_gate = Gate(
+        id="plain_gate",
+        name="No-persists probe",
+        satisfied_column="mock_alpha_done",
+        order=1,
+        needs=(),
+        produces=(),
+        run=lambda context: GateResult(GateOutcome.SUCCESS),
+        invalidate=lambda context: None,
+    )
+    version, registry = _single_gate_registry(plain_gate)
+    with write_txn(prepared["state_file"]) as connection:
+        insert_run(connection, "plain_run", pipeline_version=version)
+
+    token = process_run(prepared, "plain_run", registry=registry)
+
+    assert token == "completed"
+    row = _run_row(prepared, "plain_run")
+    assert row["mock_alpha_done"] == 1
+    assert row["experiment_id"] is None
+    assert row["globus_task_id"] is None
 
 
 # --------------------------------------------------------------------------
