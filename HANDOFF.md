@@ -492,6 +492,34 @@ release candidate pending Plan B production gates.**
     dependency-arrow guard green.
   - `4cd9860` *(docs: add detection plan (11) — lightweight mode, no open flags)* — reviewed
     READY, built same session.
+- ✅ **PLAN B — increment 2 (ADR-0006 persistence substrate) built and committed** 2026-07-31 on
+  `main`, not pushed (plan: `docs/superpowers/plans/12-persistence-substrate-plan.md` —
+  lightweight mode, one adversarial review APPROVE, TDD build). This is the FIRST Gate contract
+  change since subsystem 2 — the contract is now **ELEVEN fields** — made under ADR-0006
+  governance (same as the ADR-0002/0004/0005 pins). **No migration:** the substrate uses the
+  existing whitelisted `experiment_id`/`globus_task_id` columns, so the migration ladder is
+  **UNCHANGED (still 006)**. The shipped `mock_gates`/`reference-v1` path is untouched (Plan A
+  frozen) — proven with test-local gate fixtures. Two commits (plus this handoff commit):
+  - `80025ad` *(gate: add persists field; daemon persists outputs atomically on SUCCESS)* —
+    `sluice/core/gate.py` (ADR-0006 d.1: the eleventh field `persists: Mapping[str, str]`,
+    default empty, sealed MappingProxyType over a dict copy; a `validate_gates` clobber guard
+    rejecting any gate that persists into its own `satisfied_column` — the bad state made
+    unrepresentable), `sluice/core/context.py` (ADR-0006 d.3: `RunContext` gains the sealed
+    read-only `run_row` snapshot — OPTIONAL with an empty-proxy default so the two direct
+    constructions stay green untouched; `resolve_context` captures it via a keyed comprehension,
+    never `dict(<Row>)`, so a resuming gate reads its prior tokens with no DB touch —
+    carrying `db_path` still licenses no gate write, ADR-0002 intact), and `sluice/core/daemon.py`
+    (ADR-0006 d.2: on SUCCESS the daemon writes every declared output AND the satisfaction column
+    in ONE `update_run`/ONE `write_txn`; a declared key absent from `result.metadata` quarantines
+    the one run via a synthetic FAILURE so `gate.finished` reads honestly; a persists column
+    absent from the runs whitelist raises `UnknownColumnError` and fails loud, the txn rolling
+    back). Tests: the field-count pins updated 10→11 (`test_gate.py`) and 3→4 fields
+    (`test_context.py`, `run_row` added); `test_resolve_context_ignores_resume_tokens` narrowed
+    per ADR-0006 d.3 (which deliberately overturns the old "context ignores tokens" assertion) to
+    "derivation ignores tokens + snapshot carries them"; plus the new behavior/atomicity/guard
+    tests. Suite 461 → **469 passed**; lint clean; dependency-arrow guard green.
+  - `dd8e643` *(docs: add persistence substrate plan (12) — lightweight, ADR-0006 as spec)* —
+    reviewed, revised, built same session.
   - `8cb03ef` *(docs: add Plan B gate map (10) — FINAL, all six flags stamped, production values
     redacted to config-key pointers)* — the git steward's pre-commit scan initially REFUSED this
     file (it carried real LabKey project paths §4 C2 and the production Globus/CephFS destination
@@ -783,8 +811,20 @@ actually protected.
    tests green. Detection is a world adapter behind an injected `lister` seam — sshpass
    password via `SSHPASS` env, never argv; go-live interlock means `production-v3.1` cannot be
    stamped until its profile registry entry lands.
-   **Next: the ADR-0006 persistence substrate, then the `experiment` gate** (gate map §8; the
-   CephFS disk strategy D1 remains small and unblocking whenever slotted).
+3l. ✅ **PLAN B — increment 2 (ADR-0006 persistence substrate) built and committed** 2026-07-31
+   (`80025ad`, `dd8e643`, and this handoff commit on `main`, not pushed; see §9). Lightweight
+   mode, one adversarial review APPROVE. The Gate contract is now **ELEVEN fields** (first
+   contract change since subsystem 2, via ADR-0006 governance): `Gate.persists` maps
+   metadata keys → runs columns; the daemon writes them atomically with the satisfaction
+   checkmark in one `update_run`/`write_txn` (ADR-0002 intact — gates still only RETURN).
+   `RunContext` now carries a sealed `run_row` snapshot (the gate read path, no DB touch).
+   **Migration ladder UNCHANGED (still 006)** — the substrate uses the existing
+   `experiment_id`/`globus_task_id` columns; proven with test-local gates, `mock_gates`/
+   `reference-v1` untouched. 461 → **469 tests green**.
+   **Next: the `experiment` gate** (gate map §8 step 4 — gate 0, the first real LabKey
+   interaction and the first real `persists` user; reads `experiment_id` off the run_row
+   snapshot this increment added). The CephFS disk strategy D1 remains small and unblocking
+   whenever slotted.
    Standing items: `docs/adr/` now holds **SIX** gitignored ADRs (0006 new); `notes/` and
    `specs/` untracked (persistence research note + errata §F entries exist only in this working
    copy); `docs/dev-cycle/` untracked; **the gate map (plan 10) is now committed (`8cb03ef`) —
