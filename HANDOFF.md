@@ -466,7 +466,8 @@ release candidate pending Plan B production gates.**
     reviewed plan, READY TO BUILD, tracked via the plans allowlist.
 - ✅ **PLAN B OPENED — increment 1 (production detection) built and committed** 2026-07-31 on
   `main`, not pushed. Groundwork, all user-decided: the **Plan B gate map is FINAL**
-  (`docs/superpowers/plans/10-plan-b-gate-map.md`, working copy only — see the ⚠️ below): EIGHT
+  (`docs/superpowers/plans/10-plan-b-gate-map.md`, committed `8cb03ef` after redaction — see
+  the note below): EIGHT
   gates in true execution order — experiment → download → checksum → samplesheet → registration
   [DISABLED] → nvd → globus_submit → globus_verify — all six ⚑ flags stamped 2026-07-30/31.
   **ADR-0006 accepted** (gate output persistence: `Gate.persists` becomes the eleventh contract
@@ -491,11 +492,15 @@ release candidate pending Plan B production gates.**
     dependency-arrow guard green.
   - `4cd9860` *(docs: add detection plan (11) — lightweight mode, no open flags)* — reviewed
     READY, built same session.
-  - ⚠️ **Gate map (plan 10) held out of history by the git steward's pre-commit scan:** it cites
-    real LabKey project paths (§4 C2, lines 186-188) and the production Globus/CephFS destination
-    path (§5 ⚑A, line 265) — the exact leak class that motivated sluice's fresh history. It stays
-    untracked (the ADR convention: cited by name, curated out of git) until those values are
-    redacted to `<placeholders>` or their inclusion is explicitly approved.
+  - `8cb03ef` *(docs: add Plan B gate map (10) — FINAL, all six flags stamped, production values
+    redacted to config-key pointers)* — the git steward's pre-commit scan initially REFUSED this
+    file (it carried real LabKey project paths §4 C2 and the production Globus/CephFS destination
+    path §5 ⚑A — the exact leak class that motivated sluice's fresh history). It was then redacted
+    at the source: the two LabKey values became `real value at PP <file:line>` pointers and the
+    Globus destination became a required config key `globus_destination_root` (no code default,
+    same pointer convention). Re-scanned clean and committed. **Lesson recorded:** the fresh-history
+    gate works — a document does not enter history until its production values are pointers or
+    placeholders.
 - ⚠️ **Untracked-by-design, this machine only:** `docs/adr/` — now **SIX** ADRs (the FIVE below
   plus the new **`0006-gate-output-persistence.md`**, accepted 2026-07-31); also `notes/` and
   `specs/` (the persistence research note and the errata's new §F entries — F-V31, F-B6 — exist
@@ -782,9 +787,10 @@ actually protected.
    CephFS disk strategy D1 remains small and unblocking whenever slotted).
    Standing items: `docs/adr/` now holds **SIX** gitignored ADRs (0006 new); `notes/` and
    `specs/` untracked (persistence research note + errata §F entries exist only in this working
-   copy); `docs/dev-cycle/` untracked; **the gate map (plan 10) held out of history by the
-   pre-commit scan pending redaction of its production paths (§9)**; no git remote; CHTC drift
-   since 2026-07-17 (§2/§3) unresolved; the poller clone path note (§9) for the guard hook.
+   copy); `docs/dev-cycle/` untracked; **the gate map (plan 10) is now committed (`8cb03ef`) —
+   its production values redacted to config-key/PP pointers after the pre-commit scan refused
+   the originals (§9)**; no git remote; CHTC drift since 2026-07-17 (§2/§3) unresolved; the
+   poller clone path note (§9) for the guard hook.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
