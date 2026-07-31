@@ -37,9 +37,17 @@ optional tier — and control's `exclude_gate` op is the remediation-is-exclusio
 **ADR-0005 is executed:** no automatic file deletion — operators own destructive filesystem
 actions; rewinds (`reset_gate`/`backtrack`/`reset`) are column-clear only; `invalidate` dormant
 (the daemon never calls it, ast-pinned); B7 reap frozen pending sign-off. **B9 is closed:** both
-canonical `run.finished` emission points (completion and quarantine) are live in the daemon. The
-migration ladder is at **006** (`excluded_gates`). Next: Plan B (production gates) → Plan C
-(API + CLI). python-poller keeps running untouched throughout; sluice stays observe-only until
+canonical `run.finished` emission points (completion and quarantine) are live in the daemon.
+
+**PLAN B IS UNDERWAY — 3 increments built and committed on `main` (not pushed):** (1) production
+detection behind an injected `lister` seam; (2) the ADR-0006 persistence substrate (`Gate.persists`
++ atomic output/checkmark write; the contract is now **eleven fields**); (3) the **`experiment`
+gate — gate 0, the first production gate** (real LabKey experiment creation, resume-first +
+lookup-before-create closing the C1 duplicate hazard, fail-closed). `pixi run test` → **493 passed**,
+lint clean. The **incremental-migration policy** is adopted (⚑3): one satisfaction column per gate,
+shipped with its gate — so the ladder is now at **007** (`labkey_registered`) and each later gate
+ships its own (download → 008, checksum → 009, …). **Next: the `download` gate** (multi-TB rsync,
+NOT Globus). python-poller keeps running untouched throughout; sluice stays observe-only until
 Plan A+B reach parity.
 
 ---
@@ -520,6 +528,41 @@ release candidate pending Plan B production gates.**
     tests. Suite 461 → **469 passed**; lint clean; dependency-arrow guard green.
   - `dd8e643` *(docs: add persistence substrate plan (12) — lightweight, ADR-0006 as spec)* —
     reviewed, revised, built same session.
+- ✅ **PLAN B — increment 3 (the `experiment` gate, gate 0) built, reviewed APPROVE, and
+  committed** 2026-07-31 on `main`, not pushed (plan:
+  `docs/superpowers/plans/13-experiment-gate-plan.md` — lightweight mode, all three flags
+  stamped, one adversarial review APPROVE, TDD build). The **FIRST production gate**: order 0,
+  the first to touch an external service (LabKey), the first to persist a load-bearing
+  user-facing value (`experiment_id`, Will's reference key). Suite 469 → **493 passed**; lint
+  clean; dependency-arrow guard green (auto-covering the new `sluice.gates.labkey`/`.experiment`).
+  Two commits (plus this handoff commit):
+  - `7461b4f` *(gate: add experiment gate (gate 0) + fail-closed LabKey adapter)* —
+    `sluice/gates/labkey.py` (the fail-closed world adapter: `make_experiment_client` /
+    `ExperimentClient` / `LabKeyError`; NOT a Gate, on the gates side of the `gates -> core`
+    arrow, imports the `labkey` package lazily inside the default api-factory closure so the
+    suite runs with `labkey` absent; the api key is a config **path** `labkey_api_key_file`
+    read lazily and NEVER logged nor formatted into any message; `LabKeyError` carries only run
+    name + exception type; the C2 project value comes from config key
+    `labkey_experiments_project`, never hardcoded; `labkey_user_id` dropped from the config
+    surface entirely), `sluice/gates/experiment.py` (the `EXPERIMENT` gate + `run_experiment_gate`:
+    resume-first — set `experiment_id` → SUCCESS with **zero** client calls; lookup-before-create —
+    adopt on find, create only on `None` — the **C1 duplicate-crash-window closure**; fail-closed —
+    any `LabKeyError` → quarantine, never a fall-through to create; `produces=("experiment_id",)`
+    arms control B2; `persists={"experiment_id":"experiment_id"}` per ADR-0006; `invalidate` a
+    deliberate no-op so it can never orphan a real experiment per ADR-0005), migration **007** in
+    core `db.py` (single `ALTER TABLE runs ADD COLUMN labkey_registered INTEGER NOT NULL DEFAULT 0`).
+    Tests: `tests/test_experiment.py` (24, incl. crash-window / fail-closed / api-key-leak pins,
+    all network- and `labkey`-package-free), `tests/test_db.py` (ladder end-state 6→7 + the
+    incremental guard: the six OTHER production satisfaction columns ABSENT), `tests/test_control.py`
+    (one migration-006 test sliced to `MIGRATIONS[:6]`, semantics-preserving). Resolves errata
+    C1, C2, B2; implements ADR-0002/0005/0006.
+  - `8f97c12` *(docs: add experiment gate plan (13) — lightweight, all 3 flags stamped)* —
+    reviewed READY, built same session; carries NO real C2 project value (config-key pointer only).
+  - **⚑3 — INCREMENTAL-MIGRATION POLICY ADOPTED (record for future gate increments):**
+    migrations are now **one satisfaction column per gate, shipped with its gate** — 007 adds
+    ONLY `labkey_registered`, superseding gate-map §6's single coherent "migration 007". Each
+    later gate ships its own: **download → 008, checksum → 009, samplesheet → 010, …** The C1
+    duplicate-experiment hazard is now **structurally closed** (lookup-before-create).
   - `8cb03ef` *(docs: add Plan B gate map (10) — FINAL, all six flags stamped, production values
     redacted to config-key pointers)* — the git steward's pre-commit scan initially REFUSED this
     file (it carried real LabKey project paths §4 C2 and the production Globus/CephFS destination
@@ -831,6 +874,28 @@ actually protected.
    its production values redacted to config-key/PP pointers after the pre-commit scan refused
    the originals (§9)**; no git remote; CHTC drift since 2026-07-17 (§2/§3) unresolved; the
    poller clone path note (§9) for the guard hook.
+3m. ✅ **PLAN B — increment 3 (the `experiment` gate, gate 0) built and committed** 2026-07-31
+   (`7461b4f`, `8f97c12`, and this handoff commit on `main`, not pushed; see §9). Lightweight
+   mode, one adversarial review APPROVE, all three ⚑ flags stamped. **The FIRST production
+   gate** — order 0, the first external-service touch (LabKey), the first load-bearing
+   user-facing persist (`experiment_id`, Will's reference key). The **C1 duplicate-experiment
+   hazard is structurally closed** via resume-first + lookup-before-create (adopt on find,
+   create only on `None`), fail-closed on any `LabKeyError` (quarantine, never fall through to
+   create). The api key stays a config **path** read lazily, never logged nor in any error; the
+   C2 project value comes from config key `labkey_experiments_project`, never hardcoded;
+   `labkey_user_id` dropped entirely. Migration ladder now at **007** (`labkey_registered`).
+   469 → **493 tests green**; lint clean; dependency-arrow guard green.
+   **⚑3 — INCREMENTAL-MIGRATION POLICY ADOPTED (record for future gate increments):** one
+   satisfaction column per gate, shipped WITH its gate — 007 adds ONLY `labkey_registered`,
+   superseding gate-map §6's single coherent migration. Each later gate ships its own:
+   **download → 008, checksum → 009, samplesheet → 010, …**
+   **Next: the `download` gate** (gate map §8 step 5 — multi-TB rsync transfer of the run
+   directory; the first heavy-I/O gate. NOTE: download is rsync, NOT Globus — the first
+   `globus_task_id` belongs to a later gate). The CephFS disk strategy D1 remains small and
+   unblocking whenever slotted.
+   Standing items unchanged: `docs/adr/` holds SIX gitignored ADRs (0001–0006); `notes/` and
+   `specs/` untracked; `docs/dev-cycle/` untracked; no git remote; CHTC drift since 2026-07-17
+   (§2/§3) unresolved.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
