@@ -1810,8 +1810,11 @@ def test_db_defines_no_metadata_key_values():
 # Subsystem-closing surface test.
 #
 # With unit 13 landed the public surface is complete, so §1's "``__all__`` names
-# exactly the surface" becomes executable. It excludes ``ACTIVE_RUNS_WHERE`` (an
-# internal constant) and the Schema-row objects (SQL objects, not Python exports).
+# exactly the surface" becomes executable. It excludes the Schema-row objects
+# (SQL objects, not Python exports) and the ``ACTIVE_RUNS_WHERE`` *constant*,
+# which stays internal — its Python twin ``is_daemon_eligible`` is exported
+# (plan 14 unit 2), because callers need the rule callable while the SQL string
+# stays an implementation detail of ``select_active_runs``.
 # --------------------------------------------------------------------------
 
 
@@ -1821,7 +1824,7 @@ def test_db_exports_exactly_the_documented_surface():
     Makes §1's "``__all__`` names exactly the surface" executable, catching future
     scope creep — an audit writer, a control op, a gate helper. Covers Python
     exports only: the Schema rows (SQL objects) and the internal
-    ``ACTIVE_RUNS_WHERE`` do not belong here.
+    ``ACTIVE_RUNS_WHERE`` constant do not belong here.
     """
     documented_surface = {
         # Connection factory, clock, short-transaction helper.
@@ -1838,6 +1841,8 @@ def test_db_exports_exactly_the_documented_surface():
         "get_run",
         "update_run",
         "select_active_runs",
+        # The Python twin of the internal ACTIVE_RUNS_WHERE constant (plan 14).
+        "is_daemon_eligible",
         # Metadata primitives.
         "get_metadata",
         "set_metadata",
@@ -2075,3 +2080,75 @@ def test_lifecycle_journey_through_the_real_primitives(tmp_path):
         sluice.core.db.update_run(connection, "journey", {"lifecycle": "skipped"})
         assert "journey" not in active_run_names(connection)
         assert "steady" in active_run_names(connection)
+
+
+# --------------------------------------------------------------------------
+# Plan 14 unit 2 — the eligibility rule as a callable Python predicate.
+#
+# ``ACTIVE_RUNS_WHERE`` is the SQL half and cannot be called from Python;
+# daemon and control each hand-transcribed it instead. ``is_daemon_eligible``
+# is the one Python definition both now call. The SQL/Python pair is
+# irreducible (SQLite cannot call a Python function), so it is guarded
+# mechanically by ``tests/test_predicate_twins.py``.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("lifecycle", "errored", "eligible"),
+    [
+        ("active", False, True),
+        ("active", True, False),
+        ("held", False, False),
+        ("held", True, False),
+        ("skipped", False, False),
+        ("skipped", True, False),
+    ],
+)
+def test_is_daemon_eligible_matches_the_two_and_ed_clauses(
+    tmp_path, lifecycle, errored, eligible
+):
+    """Only ``lifecycle='active'`` AND a clear ``errored_at`` is daemon-eligible.
+
+    The full cross-product, so dropping either clause is caught: a predicate
+    reading only ``lifecycle`` would call the errored-active row eligible, and
+    one reading only ``errored_at`` would call the clear held row eligible.
+    """
+    with initialized_connection(tmp_path / "state.db") as connection:
+        insert_run_row(connection, "subject", lifecycle=lifecycle, errored=errored)
+        run_row = sluice.core.db.get_run(connection, "subject")
+
+    assert sluice.core.db.is_daemon_eligible(run_row) is eligible, (
+        f"lifecycle={lifecycle!r} errored={errored} must be "
+        f"{'eligible' if eligible else 'ineligible'} — the rule is exactly "
+        "lifecycle='active' AND errored_at IS NULL (F4)."
+    )
+
+
+def test_is_daemon_eligible_ignores_completion(tmp_path):
+    """A completed but still-active run stays eligible (F4).
+
+    ``completed_at`` is a cache reconcile re-derives every look, so filtering on
+    it could hide a run (stale stamp, reset_gate) from the loop meant to notice
+    it. This pins that F4 carve-out against a future "obvious" tightening.
+    """
+    with initialized_connection(tmp_path / "state.db") as connection:
+        insert_run_row(connection, "done_but_active", completed=True)
+        run_row = sluice.core.db.get_run(connection, "done_but_active")
+
+    assert sluice.core.db.is_daemon_eligible(run_row) is True, (
+        "a completed run that is still active and unquarantined must remain "
+        "eligible — completed_at is deliberately not part of the rule (F4)."
+    )
+
+
+def test_is_daemon_eligible_accepts_a_plain_mapping():
+    """The predicate is duck-typed on subscript, so a plain dict works.
+
+    Callers hand it a ``sqlite3.Row`` in production, but control and daemon
+    tests build plain dicts; requiring a real Row would make the predicate
+    awkward to use exactly where it is most useful.
+    """
+    assert (
+        sluice.core.db.is_daemon_eligible({"lifecycle": "active", "errored_at": None})
+        is True
+    )

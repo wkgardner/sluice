@@ -28,6 +28,7 @@ __all__ = [
     "get_run",
     "initialize_database",
     "insert_run",
+    "is_daemon_eligible",
     "now_iso",
     "schema_version",
     "select_active_runs",
@@ -505,7 +506,40 @@ def update_run(
 # completed runs are returned forever and reconcile skips them cheaply. A
 # ``completed_at`` pre-filter, if wanted, is a separate query, never a widening
 # of this constant.
+#
+# TWIN (plan 14): ``is_daemon_eligible`` below is the Python half of this exact
+# rule. SQLite cannot call a Python function, so the pair is irreducible and the
+# two must be edited together — ``tests/test_predicate_twins.py`` fails if one
+# changes without the other.
 ACTIVE_RUNS_WHERE = "lifecycle = 'active' AND errored_at IS NULL"
+
+
+def is_daemon_eligible(run_row) -> bool:
+    """Return whether the daemon may work on this run — the Python twin of ``ACTIVE_RUNS_WHERE``.
+
+    The single canonical eligibility rule (F4) as a callable: operator-eligible
+    (``lifecycle == 'active'``) and not quarantined (``errored_at is None``).
+    Held, skipped, and quarantined runs all answer ``False``; a *completed* run
+    still answers ``True``, because ``completed_at`` is deliberately no part of
+    the rule (see ``ACTIVE_RUNS_WHERE`` above for why).
+
+    TWIN: ``ACTIVE_RUNS_WHERE`` is the SQL half of this same rule, used by
+    ``select_active_runs`` to filter inside the database. SQLite cannot call a
+    Python function, so the two cannot be merged — they are edited together or
+    not at all, and ``tests/test_predicate_twins.py`` runs both over the same
+    rows to prove they still agree. Before plan 14 this half was hand-copied
+    into ``daemon.process_run`` and ``control._quiescence_refusal_why``; both
+    now call here.
+
+    Args:
+        run_row: any mapping-like row exposing ``lifecycle`` and ``errored_at``
+            by subscript — a ``sqlite3.Row`` in production, a plain dict in
+            tests.
+
+    Returns:
+        ``True`` iff the run is daemon-eligible.
+    """
+    return run_row["lifecycle"] == "active" and run_row["errored_at"] is None
 
 
 def select_active_runs(conn: sqlite3.Connection) -> list[sqlite3.Row]:

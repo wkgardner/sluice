@@ -23,6 +23,7 @@ from sluice.core.db import (
     get_connection,
     get_metadata,
     get_run,
+    is_daemon_eligible,
     now_iso,
     set_metadata,
     update_run,
@@ -915,12 +916,13 @@ def _quiescence_refusal_why(run_row) -> str | None:
 
     The §2 residual posture (⚑3 as superseded by ADR-0005) — a
     recommendation-backed guard, not file-safety: the predicate is exactly
-    ``ACTIVE_RUNS_WHERE`` (``lifecycle='active' AND errored_at IS NULL``), so
-    held, skipped, and quarantined runs all pass. Only
+    ``ACTIVE_RUNS_WHERE``, called through its Python twin
+    ``db.is_daemon_eligible`` (plan 14) rather than re-typed here, so held,
+    skipped, and quarantined runs all pass. Only
     ``reset_gate``/``backtrack``/``reset`` consult this; state-only ops carry
     no such precondition.
     """
-    if run_row["lifecycle"] == "active" and run_row["errored_at"] is None:
+    if is_daemon_eligible(run_row):
         return (
             "run is daemon-eligible — hold, skip, or wait for quarantine "
             "first: an in-flight gate's persist would immediately re-stamp "

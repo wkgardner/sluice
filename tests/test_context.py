@@ -587,22 +587,33 @@ def test_resolve_context_derivation_ignores_resume_tokens():
 
 
 def test_context_exports_exactly_the_documented_surface():
-    """``sluice.core.context.__all__`` is exactly ``{RunContext, resolve_context}``.
+    """``context.__all__`` is exactly ``{RunContext, resolve_context, is_safe_path_component}``.
 
     The scope guard (db unit-7 precedent, plan 04 §1): the module's public
-    surface is CLOSED at these two names. A quietly-exported helper — a path
+    surface is CLOSED at these names. A quietly-exported helper — a path
     builder, a config validator — would become load-bearing API the moment a
     downstream subsystem imported it; growing the surface must be a conscious
     contract change that edits this set, never an incidental ``__all__`` entry.
+
+    ``is_safe_path_component`` is exactly such a conscious change (plan 14
+    unit 1): the traversal rule was already load-bearing in two modules as a
+    hand-copied twin, so exporting it collapses the copies rather than growing
+    the API — the daemon's private ``_is_safe_path_component`` was deleted in
+    the same change.
     """
     # Local import: context is the module under construction (same rationale
     # as the import-hygiene test above).
     import sluice.core.context
 
-    assert set(sluice.core.context.__all__) == {"RunContext", "resolve_context"}, (
+    assert set(sluice.core.context.__all__) == {
+        "RunContext",
+        "resolve_context",
+        "is_safe_path_component",
+    }, (
         "sluice.core.context's public surface must be exactly RunContext + "
-        "resolve_context (plan 04 §1) — growing or shrinking it is a "
-        "conscious contract change, never a quiet export."
+        "resolve_context + is_safe_path_component (plan 04 §1, plan 14 unit "
+        "1) — growing or shrinking it is a conscious contract change, never a "
+        "quiet export."
     )
 
 
@@ -756,4 +767,50 @@ def test_resolved_context_satisfies_the_mock_gate_workdir_contract(tmp_path):
         "resolved workdir is where gate work lands (plan 04 unit 3: "
         "resolve_context computed the path, the caller created it, the gate "
         "wrote under it)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Plan 14 unit 1 — the safe-path-component rule, exported.
+#
+# The rule had two hand-copied homes: inline in resolve_context and, as
+# daemon._is_safe_path_component, in the jsonl sink. Security-load-bearing in
+# both (it is what stops a run named ".." escaping onto disk), so two copies
+# was one too many. context owns the identity->path boundary, so it owns the
+# rule; daemon imports it and its private copy is deleted.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "unsafe_name",
+    ["../evil", "a/b", "..\\evil", "..", ".", ""],
+)
+def test_is_safe_path_component_rejects_unsafe_names(unsafe_name):
+    r"""The exported predicate refuses any name that is not a single safe component.
+
+    The same contract ``resolve_context`` has always enforced inline, now
+    callable: a name containing ``/`` or ``\``, or equal to ``""``/``"."``/
+    ``".."``, is not a single path component. This is the whole traversal
+    defense, so the parametrized cases are the security surface.
+    """
+    from sluice.core.context import is_safe_path_component
+
+    assert is_safe_path_component(unsafe_name) is False, (
+        f"{unsafe_name!r} is not a single safe path component and must be "
+        "refused — this predicate is the traversal defense (plan 04 §3.3)."
+    )
+
+
+def test_is_safe_path_component_accepts_a_plain_run_name():
+    """A legitimate single-component run name passes.
+
+    The control against an over-broad rule: production sequencing folder names
+    are always single components, so the defense must reject traversal without
+    rejecting real work.
+    """
+    from sluice.core.context import is_safe_path_component
+
+    assert is_safe_path_component("run_A") is True, (
+        "a plain single-component name must pass — the traversal defense "
+        "must not reject legitimate run names (plan 04 §3.3)."
     )

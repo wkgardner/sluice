@@ -14,7 +14,7 @@ from collections.abc import Mapping
 
 # The declared public surface (db unit-7 precedent), grown as names land
 # (plan 04 §4).
-__all__ = ["RunContext", "resolve_context"]
+__all__ = ["RunContext", "is_safe_path_component", "resolve_context"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -60,6 +60,27 @@ class RunContext:
         object.__setattr__(self, "run_row", types.MappingProxyType(dict(self.run_row)))
 
 
+def is_safe_path_component(run_name: str) -> bool:
+    r"""Return whether ``run_name`` is a single safe path component.
+
+    The traversal defense in one place (plan 14 unit 1). ``context`` owns the
+    identity→path boundary, so it owns the rule: a name containing ``/`` or
+    ``\``, or equal to ``""``/``"."``/``".."``, must never become a path.
+    Without it, ``Path("/staging") / "../../etc"`` escapes the staging root.
+
+    Exported because it is needed away from this boundary too: the daemon's
+    per-run jsonl sink (plan 03 §3.11) turns the same identity into a path and
+    used to carry a hand-copied twin. One definition, two callers.
+
+    Args:
+        run_name: the ``run.name`` field value to validate.
+
+    Returns:
+        ``True`` iff the name is a single safe path component.
+    """
+    return not ("/" in run_name or "\\" in run_name or run_name in ("", ".", ".."))
+
+
 def resolve_context(run_row, config: Mapping[str, object]) -> RunContext:
     r"""Derive a ``RunContext`` from an already-fetched run row and loaded config.
 
@@ -94,7 +115,7 @@ def resolve_context(run_row, config: Mapping[str, object]) -> RunContext:
     # Path("/staging") / "../../etc" escapes the staging root. The message
     # carries the raw offending name so the daemon's quarantine-grade log
     # (§7) says which stored name was refused.
-    if "/" in run_name or "\\" in run_name or run_name in ("", ".", ".."):
+    if not is_safe_path_component(run_name):
         raise ValueError(
             f'run name "{run_name}" is not a single safe path component: '
             'it must not contain "/" or "\\" and must not equal "", ".", '
