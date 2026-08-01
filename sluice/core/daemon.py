@@ -29,13 +29,14 @@ from collections.abc import Callable, Mapping
 import structlog
 
 from sluice.core import control
-from sluice.core.context import resolve_context
+from sluice.core.context import is_safe_path_component, resolve_context
 from sluice.core.db import (
     get_connection,
     get_metadata,
     get_run,
     initialize_database,
     insert_run,
+    is_daemon_eligible,
     now_iso,
     select_active_runs,
     set_metadata,
@@ -225,7 +226,7 @@ def detect_new_runs(config, *, lister=None, notifier=None) -> list[str]:
     once **before and outside any transaction** so a network listing never holds
     a ``write_txn`` (§5). Candidates are sorted by **name only** (never
     whole-tuple — comparing ``None`` with a ``float`` on a duplicate name would
-    raise ``TypeError``); any name failing ``_is_safe_path_component`` is dropped
+    raise ``TypeError``); any name failing ``is_safe_path_component`` is dropped
     with one ``detection.unsafe_name`` error event so a garbled listing cannot
     mint a run named ``..``. In ONE ``write_txn`` each surviving unseen name is
     inserted with ``pipeline_version`` stamped from ``metadata.pipeline_profile``
@@ -279,7 +280,7 @@ def detect_new_runs(config, *, lister=None, notifier=None) -> list[str]:
     sorted_candidates = sorted(candidates, key=lambda candidate: candidate[0])
     safe_candidates: list[tuple[str, float | None]] = []
     for name, size_tb in sorted_candidates:
-        if _is_safe_path_component(name):
+        if is_safe_path_component(name):
             safe_candidates.append((name, size_tb))
         else:
             # A garbled/malicious listing must never mint a run named ``..``.
@@ -417,9 +418,9 @@ def process_run(config, run_name, *, registry, notifier=None, should_stop=None) 
             log.error("run.vanished", **{"run.name": run_name})
             return "missing"
 
-        # §3.3 eligibility, re-checked on the fresh row every step — the same
-        # predicate as db's non-exported ACTIVE_RUNS_WHERE, re-implemented inline.
-        if not (run_row["lifecycle"] == "active" and run_row["errored_at"] is None):
+        # §3.3 eligibility, re-checked on the fresh row every step — the one
+        # canonical rule, called rather than re-typed (plan 14).
+        if not is_daemon_eligible(run_row):
             return "ineligible"
 
         # Contract derivation — the §3.5 quarantine class (call-site-scoped, so
@@ -783,24 +784,6 @@ def run_forever(
         lock_handle.close()
 
 
-def _is_safe_path_component(run_name: str) -> bool:
-    r"""Return whether ``run_name`` is a single safe path component.
-
-    The safe-component rule, re-implemented here (§3.11 / unit 7): a name that
-    contains ``/`` or ``\\``, or equals ``""``/``"."``/``".."``, must never
-    become a per-run jsonl path. ``resolve_context`` keeps the same rule inline
-    at its identity→path boundary — there is no exported helper to import — so
-    this mirrors it.
-
-    Args:
-        run_name: the ``run.name`` field value to validate.
-
-    Returns:
-        ``True`` iff the name is a single safe path component.
-    """
-    return not ("/" in run_name or "\\" in run_name or run_name in ("", ".", ".."))
-
-
 def _make_sink_processor(
     events_logger, console_logger, console_renderer, run_events_dir
 ):
@@ -831,7 +814,7 @@ def _make_sink_processor(
 
         run_name = event_dict.get("run.name")
         if run_name is not None:
-            if _is_safe_path_component(run_name):
+            if is_safe_path_component(run_name):
                 per_run_path = pathlib.Path(run_events_dir) / f"{run_name}.jsonl"
                 with per_run_path.open("a", encoding="utf-8") as per_run_file:
                     per_run_file.write(json_line + "\n")
