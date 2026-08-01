@@ -896,6 +896,48 @@ actually protected.
    Standing items unchanged: `docs/adr/` holds SIX gitignored ADRs (0001–0006); `notes/` and
    `specs/` untracked; `docs/dev-cycle/` untracked; no git remote; CHTC drift since 2026-07-17
    (§2/§3) unresolved.
+3n. ✅ **PREDICATE DEEPENING (plan 14) built and committed** 2026-08-01 (see §9). Not a Plan B
+   increment — a **behavior-preserving locality refactor** taken from the 2026-07-31 architecture
+   review (findings #1 and #2). The review's diagnosis: sluice's modules are genuinely deep; the
+   friction is **locality failures**, where a load-bearing rule has one home and is then
+   re-implemented inline at N sites. No schema change, no migration, ladder stays at **007**.
+   - **The eligibility rule** (`lifecycle='active' AND errored_at IS NULL`, F4) went from THREE
+     copies to TWO. `db.is_daemon_eligible` is the new exported Python half; `daemon.process_run`
+     and `control._quiescence_refusal_why` both call it instead of hand-transcribing it.
+     `ACTIVE_RUNS_WHERE` stays internal and stays SQL — SQLite cannot call a Python function, so
+     that one seam is **irreducible by design, not by neglect**.
+   - **The safe-path rule** went from TWO copies to **ONE**. `context.is_safe_path_component` is
+     exported (context owns the identity→path boundary); `daemon._is_safe_path_component` was
+     **deleted** and its two callers (detection, the per-run jsonl sink) import the real one.
+     Security-load-bearing — it is what stops a run named `..` escaping onto disk.
+   - **The irreducible seam is mechanically guarded, not merely documented.** New
+     `tests/test_predicate_twins.py` runs both halves over the same rows (full lifecycle × error
+     cross-product plus a completed-but-active row, which is what catches a future "obvious"
+     `completed_at IS NULL` tightening). **Verified it actually fails** on injected drift in BOTH
+     directions — Python half tightened, and SQL half loosened — same standard as
+     `test_dependency_arrows.py`. Wired into `.claude/hooks/arch_guard.py`, whose single
+     `GUARD_TEST` constant became a `(test, headline)` table so each guard keeps its own precise
+     failure message; hook proven to exit 2 on drift and 0 when healthy.
+   - 493 → **517 tests green**; lint clean; dependency-arrow guard green. Exactly **two** existing
+     tests were edited, both `__all__` surface guards (`test_context.py`, `test_db.py`), both
+     because a module contract deliberately changed — the plan's stop condition was that a third
+     edit would mean the change was not behavior-preserving. It never fired.
+   **Deliberately out of scope** (each its own pass): the three standalone `errored_at` reads
+   (`events.py`, `clear_error`, `control.py:1667`) — they ask "is this run quarantined?", one
+   clause, not the AND of two; review finding #3 (five inline `_conclude` twins in the 1,745-line
+   `control.py`); findings #4/#5; finding #6 is an **anti-recommendation** — do NOT extract a
+   `gates/` base class, it would be a shallow pass-through; document it in `CONTEXT.md` instead.
+   **Next: the drift-hunter agent** (plan 14 §6) — Will's idea, sequenced deliberately after this
+   refactor so it has a worked example. Design constraint already established: it must be a
+   **periodic whole-repo sweep, not a per-increment diff review**, because the two copies of the
+   eligibility rule were written seventeen commits apart in different subsystems — a diff-scoped
+   reviewer is structurally the wrong window. Needs a standing exclusion list (this SQL/Python
+   twin, now deliberate and test-guarded; the `gates/` world-adapter shape) or it will nag about
+   settled decisions forever. Division of labour: **the agent discovers, a test enforces.**
+   Then the `download` gate (Plan B increment 4, migration 008) resumes as before.
+   Standing items unchanged: `docs/adr/` holds SIX gitignored ADRs (0001–0006); `notes/` and
+   `specs/` untracked; `docs/dev-cycle/` untracked; no git remote; CHTC drift since 2026-07-17
+   (§2/§3) unresolved.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
