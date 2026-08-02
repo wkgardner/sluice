@@ -29,7 +29,7 @@ designed and — on macOS — now EXECUTED**: the repo skeleton, config schema, 
 dependency-arrow guard test all exist and `pixi run test` is green.
 
 **PLAN A IS COMPLETE — all nine subsystems built, committed, and green (33 commits on `main`,
-none pushed — no remote configured; tagged `plan-a-rc1`).** db, gate, events, context, profile,
+ALL PUSHED to `origin` = `git@github.com:wkgardner/sluice.git`, `main` tracks `origin/main` — verified 2026-08-01; tagged `plan-a-rc1`).** db, gate, events, context, profile,
 reconcile, audit, control, daemon are done; `pixi run test` → 435 passed, lint clean. **ADR-0004
 (binary contracts) is executed in code:** the profile vocabulary is `required|disabled` — a run's
 contract is binary, every contract gate mandatory, excluded gates absent; there is no runtime
@@ -39,7 +39,7 @@ actions; rewinds (`reset_gate`/`backtrack`/`reset`) are column-clear only; `inva
 (the daemon never calls it, ast-pinned); B7 reap frozen pending sign-off. **B9 is closed:** both
 canonical `run.finished` emission points (completion and quarantine) are live in the daemon.
 
-**PLAN B IS UNDERWAY — 3 increments built and committed on `main` (not pushed):** (1) production
+**PLAN B IS UNDERWAY — 3 increments built, committed, and pushed on `main`:** (1) production
 detection behind an injected `lister` seam; (2) the ADR-0006 persistence substrate (`Gate.persists`
 + atomic output/checkmark write; the contract is now **eleven fields**); (3) the **`experiment`
 gate — gate 0, the first production gate** (real LabKey experiment creation, resume-first +
@@ -954,8 +954,9 @@ actually protected.
    **Next: the `download` gate** (Plan B increment 4, gate map §8 step 5 — multi-TB rsync, migration
    008, errata D6 threadpool-contextvar, and deferred ⚑A where `resolve_context.workdir` becomes
    experiment_id-aware). Resumes as before.
-   Standing items: `notes/`, `specs/`, `docs/dev-cycle/` still untracked; **no git remote — now the
-   single largest project risk, with ~44 commits on one laptop**; CHTC drift since 2026-07-17
+   Standing items: `notes/`, `specs/`, `docs/dev-cycle/` still untracked; **git remote CONFIRMED 2026-08-01: `origin` =
+   `git@github.com:wkgardner/sluice.git`, `main` tracks `origin/main`, all work pushed** (earlier
+   "no git remote" entries in this file are STALE — the remote was added without a handoff update); CHTC drift since 2026-07-17
    (§2/§3) unresolved.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
