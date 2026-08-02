@@ -46,7 +46,7 @@ from typing import Any
 
 import structlog
 
-from sluice.core.gate import Gate, GateOutcome, GateResult
+from sluice.core.gate import Gate, GateOutcome, GateResult, no_op_invalidate
 from sluice.gates.nvd_tool import NvdToolError, build_nvd_command
 from sluice.gates.samplesheet import SAMPLESHEET_FILENAME
 
@@ -294,22 +294,6 @@ def run_nvd_gate(context: Any, popen=subprocess.Popen) -> GateResult:
     return GateResult(GateOutcome.SUCCESS, metadata={"nvd_log": str(log_path)})
 
 
-def _run_nvd(context: Any) -> GateResult:
-    """Production wiring: the real ``subprocess.Popen`` is the default."""
-    return run_nvd_gate(context)
-
-
-def _invalidate_nvd(context: Any) -> None:
-    """A deliberate NO-OP (ADR-0005): sluice never deletes NVD results.
-
-    The honest undo would be removing a results tree that cost hours to compute.
-    ADR-0005 keeps destructive filesystem actions in operators' hands, and
-    ``invalidate`` is never invoked automatically (d.3). Re-running is safe:
-    ``--resume`` picks up from the last checkpoint.
-    """
-    return None
-
-
 NVD = Gate(
     id="nvd",
     name="NVD preprocess",
@@ -317,8 +301,13 @@ NVD = Gate(
     order=5,  # TRUE execution order — after samplesheet (registration is order 4)
     needs=("samplesheet",),  # NOT registration: it is DISABLED (⚑D)
     produces=("nvd-results/",),
-    run=_run_nvd,
-    invalidate=_invalidate_nvd,
+    # No wiring wrapper: the ``popen`` seam is a default argument, so the gate
+    # function IS the production entry point.
+    run=run_nvd_gate,
+    # ADR-0005: the honest undo would remove a results tree that cost hours to
+    # compute. Re-running is safe — ``--resume`` picks up from the last
+    # checkpoint.
+    invalidate=no_op_invalidate,
     terminate=None,  # ⚑E — interruption is handled by --resume on re-entry
     persists={},  # results live on disk — no token worth a column
 )

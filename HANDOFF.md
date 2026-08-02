@@ -1024,6 +1024,53 @@ actually protected.
    accepted. That is the class of problem that otherwise surfaces on deployment day.
    Standing items: `notes/`, `specs/`, `docs/dev-cycle/` untracked; CHTC drift since 2026-07-17
    unresolved; the Globus pair + `registration` (⚑D, needs C3 fail-closed) remain deferred.
+3q. ✅ **GATE-AUTHORING ERGONOMICS — `docs/ADDING-A-GATE.md` + a boilerplate hoist** 2026-08-02.
+   Not a plan-15 increment. Raised by Will directly: *"I thought we were going to make gates of one
+   task object with a few shared values… now every gate is its own python file that is very
+   unique."* Investigated rather than answered — the shared task object **held**: all five
+   production gates declare the same eleven fields in the same order, and `validate_gates` enforces
+   the set. What made it *feel* bespoke was measured instead of assumed:
+
+   | module | file lines | docstring | **code** |
+   |---|---|---|---|
+   | experiment | 132 | 73 | **36** |
+   | samplesheet | 114 | 45 | **40** |
+   | checksum | 244 | 75 | **118** |
+   | nvd | 330 | 107 | **166** |
+   | download | 448 | 140 | **228** |
+
+   The gates are 40–55% docstring (ADR-0001 working as designed), so they read as unique essays
+   over what is mostly a shared skeleton. Two genuine duplications were removed and one proposed
+   refactor was **rejected**:
+   - **`no_op_invalidate` hoisted into `sluice/core/gate.py`** (now FIVE exported names), replacing
+     four near-identical `_invalidate_X` functions in download/checksum/samplesheet/nvd. Each
+     gate's specific reason moved to a comment on its `invalidate=` line — nothing lost.
+     `experiment` deliberately KEEPS its own: its no-op is load-bearing (clearing `experiment_id`
+     would orphan a real LabKey experiment) and must not read as boilerplate. A new test asserts
+     the four share the same **function object**, so a per-gate copy creeping back fails.
+   - **`_run_nvd` deleted** — a wrapper that only called through (`popen` is a default arg, so
+     `run_nvd_gate` IS the production entry point).
+   - **REJECTED: a shared `wire_client` helper** for the three `functools.partial` wrappers. First
+     proposed, then withdrawn on reading the code: they are three different shapes, not one, and a
+     generic helper would be exactly the shallow pass-through CONTEXT.md records as an
+     anti-recommendation (review finding #6). Three explicit four-line functions that each name
+     their own adapter beat one indirection you have to chase.
+   - **`docs/ADDING-A-GATE.md`** — the recipe that existed nowhere: four steps (migration → module
+     → one line in the profile → tests), a copy-pasteable skeleton with the three layers labelled,
+     and a table of the five mistakes the system punishes structurally *with the error each
+     produces*. The next gate is a fill-in-the-blank job, for Will or for the colleague.
+   - 654 → **656 tests green**; lint clean; both guards green. Exactly ONE existing test edited
+     (the `gate.__all__` surface guard) — the plan-14 stop condition never fired.
+   **⚠️ FOUND WHILE COMMITTING: `docs/OPERATING.md` WAS NEVER IN GIT.** The deny-all `.gitignore`
+   silently swallowed it; commit `3d47304` recorded it as landed and §3p above repeats the claim.
+   The single most handover-critical document in the repo — the operator guide written for the
+   colleague who runs sluice unattended — existed on ONE laptop for a day. Fixed here with
+   `!/docs/*.md` (non-recursive, so `superpowers/`, `dev-cycle/`, `teachme/`, `agents/` stay
+   untracked); both docs scanned clean for secrets and production values before tracking.
+   **This is the second time the deny-all gitignore has hidden a load-bearing file** (the six ADRs
+   were the first, closed in 3o) — treat "the commit says it landed" as unverified until
+   `git ls-files` agrees.
+   **Next: `sluice doctor` (errata E2)** — unchanged.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.

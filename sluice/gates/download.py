@@ -32,7 +32,7 @@ from typing import Any
 
 import structlog
 
-from sluice.core.gate import Gate, GateOutcome, GateResult
+from sluice.core.gate import Gate, GateOutcome, GateResult, no_op_invalidate
 from sluice.gates.transfer import (
     TransferError,
     is_connection_blocked_error,
@@ -417,18 +417,6 @@ def _run_download(context: Any) -> GateResult:
     )
 
 
-def _invalidate_download(context: Any) -> None:
-    """A deliberate NO-OP (ADR-0005): sluice never deletes a downloaded file.
-
-    ``produces`` names ``raw_seqs/``, and the honest undo would be deleting a
-    multi-TB transfer. ADR-0005 puts destructive filesystem actions in operators'
-    hands only, and ``invalidate`` is never invoked automatically (d.3) — so this
-    stays a dormant hook. Re-running the gate is safe regardless: ``rsync -avP``
-    re-verifies and resumes rather than re-downloading.
-    """
-    return None
-
-
 DOWNLOAD = Gate(
     id="download",
     name="Download raw lanes (rsync)",
@@ -437,7 +425,10 @@ DOWNLOAD = Gate(
     needs=("experiment",),  # staging is keyed by experiment_id (⚑A)
     produces=("raw_seqs/",),
     run=_run_download,
-    invalidate=_invalidate_download,  # deliberate no-op (ADR-0005)
+    # ADR-0005: the honest undo would delete a multi-TB transfer, which sluice
+    # never does automatically. Re-running is safe anyway — ``rsync -avP``
+    # re-verifies and resumes rather than re-downloading.
+    invalidate=no_op_invalidate,
     terminate=None,  # rsync resumes; interruption is handled by re-entry (⚑E)
     persists={},  # the filesystem is the record — no token to persist
 )
