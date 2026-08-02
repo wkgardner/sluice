@@ -88,6 +88,13 @@ logs/
 #    values, no secrets, same standard as the ADRs.
 !/docs/*.md
 
+#    Design specs are allowlisted ONE FILE AT A TIME, never by glob: the errata
+#    and the design of record in that directory carry production values (the
+#    gate map needed redaction before it could be committed in 8cb03ef), so a
+#    `!/docs/superpowers/specs/*.md` rule would sweep them in unreviewed. Each
+#    line below is a spec that has been scanned clean.
+!/docs/superpowers/specs/2026-08-02-sluice-doctor-design.md
+
 # 8) Ruff linting
 !/ruff.toml
 
