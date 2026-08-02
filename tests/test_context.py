@@ -318,7 +318,7 @@ def test_resolve_context_derives_workdir_db_path_and_config():
     from sluice.core.context import resolve_context
 
     config = make_config(local_staging_dir="/staging", state_file="data/x.db")
-    row = {"name": "run_A"}
+    row = {"name": "run_A", "experiment_id": None}
 
     ctx = resolve_context(row, config)
 
@@ -360,7 +360,7 @@ def test_resolve_context_creates_no_filesystem_state(tmp_path):
         state_file=str(state_file),
     )
 
-    ctx = resolve_context({"name": "run_A"}, config)
+    ctx = resolve_context({"name": "run_A", "experiment_id": None}, config)
 
     assert not ctx.workdir.exists(), (
         "resolve_context created ctx.workdir — it must compute the path only; "
@@ -395,7 +395,7 @@ def test_resolve_context_is_deterministic():
     from sluice.core.context import resolve_context
 
     config = make_config()
-    row = {"name": "run_A"}
+    row = {"name": "run_A", "experiment_id": None}
 
     first_context = resolve_context(row, config)
     second_context = resolve_context(row, config)
@@ -456,7 +456,7 @@ def test_resolve_context_fails_loud_on_a_missing_config_key(missing_key):
     del config[missing_key]
 
     with pytest.raises(KeyError, match=missing_key):
-        resolve_context({"name": "run_A"}, config)
+        resolve_context({"name": "run_A", "experiment_id": None}, config)
 
 
 @pytest.mark.parametrize(
@@ -490,11 +490,11 @@ def test_resolve_context_rejects_a_traversing_run_name(traversing_name):
     # (match="" would vacuously pass against any message).
     offending_value_pattern = re.escape(traversing_name) if traversing_name else None
     with pytest.raises(ValueError, match=offending_value_pattern):
-        resolve_context({"name": traversing_name}, config)
+        resolve_context({"name": traversing_name, "experiment_id": None}, config)
 
     # Control: a plain single-component name resolves normally — the defense
     # rejects traversal, not legitimate run names.
-    ctx = resolve_context({"name": "run_A"}, config)
+    ctx = resolve_context({"name": "run_A", "experiment_id": None}, config)
     assert ctx.workdir == pathlib.Path("/staging/run_A"), (
         "a plain single-component name must still resolve — the traversal "
         "defense must not reject legitimate run names (plan 04 §3.3)."
@@ -511,13 +511,22 @@ def test_resolve_context_derivation_ignores_resume_tokens():
     tokens) is DELIBERATELY superseded by ADR-0006 d.3: ``resolve_context`` now
     carries a sealed snapshot of the whole run row so a resuming gate reads its
     prior tokens off ``context.run_row`` with no DB touch — carrying the token
-    is the point, not a leak. What still must hold is the narrower, permanent
-    guarantee: the path DERIVATION (``workdir``/``db_path``) reads exactly one
-    column, ``name``, and never folds a token into a path — so all three rows
-    below derive the SAME workdir/db_path — while ``run_row`` faithfully
-    reflects whatever each row carried. The spec §6 resume guarantee (a
-    restarted daemon rebuilds the identical context from the SAME row) is pinned
-    by ``test_resolve_context_is_deterministic``.
+    is the point, not a leak.
+
+    NARROWED AGAIN by ⚑A (gate map §5): the derivation no longer reads exactly
+    one column. It reads **two** — ``name`` and ``experiment_id`` — because
+    production stages a run under its experiment number. So the permanent
+    guarantee is now specifically about the RESUME tokens: ``globus_task_id`` and
+    ``slack_thread_ts`` are Globus- and Slack-assigned handles that must NEVER
+    fold into a path, so all three rows below (which differ only in those tokens,
+    with ``experiment_id`` held constant) derive the SAME workdir/db_path, while
+    ``run_row`` faithfully reflects whatever each row carried.
+
+    ``experiment_id`` being path-forming while these two are not is the whole
+    distinction: it is a stable identity the operator also sees in LabKey, they
+    are opaque handles for a specific in-flight operation. The spec §6 resume
+    guarantee (a restarted daemon rebuilds the identical context from the SAME
+    row) is pinned by ``test_resolve_context_is_deterministic``.
     """
     # Local import: resolve_context is the unit under construction (same
     # rationale as the happy-path test above).
@@ -528,17 +537,21 @@ def test_resolve_context_derivation_ignores_resume_tokens():
     # The same run three ways: tokens set (a resumed run), tokens NULL (a
     # fresh run, as sqlite3.Row would present unset columns), keys absent
     # entirely.
+    # experiment_id is held constant across all three (⚑A: it IS path-forming,
+    # so varying it here would confound what this test is about).
     row_with_tokens_set = {
         "name": "run_A",
+        "experiment_id": None,
         "globus_task_id": "task-xyz",
         "slack_thread_ts": "1721.001",
     }
     row_with_null_tokens = {
         "name": "run_A",
+        "experiment_id": None,
         "globus_task_id": None,
         "slack_thread_ts": None,
     }
-    row_without_token_keys = {"name": "run_A"}
+    row_without_token_keys = {"name": "run_A", "experiment_id": None}
 
     context_from_set_tokens = resolve_context(row_with_tokens_set, config)
     context_from_null_tokens = resolve_context(row_with_null_tokens, config)
@@ -813,4 +826,97 @@ def test_is_safe_path_component_accepts_a_plain_run_name():
     assert is_safe_path_component("run_A") is True, (
         "a plain single-component name must pass — the traversal defense "
         "must not reject legitimate run names (plan 04 §3.3)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# ⚑A (gate map §5, APPROVED 2026-07-30) — experiment_id-keyed staging.
+#
+# Production stages a run under its LabKey experiment number, not its folder
+# name: {local_staging_dir}/{experiment_id}/{raw_seqs,merged_seqs,nvd-results}.
+# But gate 0 is what CREATES the experiment, so experiment_id is NULL when the
+# daemon resolves the context for it — and the daemon mkdirs workdir
+# unconditionally for every gate. Reading (b): key on experiment_id when it is
+# set, fall back to the Plan-A name-keyed path while it is NULL. workdir stays
+# a non-optional Path, so the unconditional mkdir stays sound.
+# ---------------------------------------------------------------------------
+
+
+def test_workdir_is_experiment_id_keyed_once_the_experiment_exists():
+    """With ``experiment_id`` set, ``workdir`` is ``{local_staging_dir}/{experiment_id}``.
+
+    The production layout (⚑A). Every gate after order 0 sees this path, which is
+    why the experiment number is the key a human uses to find a run's files on
+    disk — it matches what they read in LabKey.
+    """
+    from sluice.core.context import resolve_context
+
+    config = make_config(local_staging_dir="/staging")
+
+    ctx = resolve_context({"name": "run_A", "experiment_id": 4471}, config)
+
+    assert ctx.workdir == pathlib.Path("/staging/4471"), (
+        "with experiment_id set, staging must be keyed by the experiment "
+        "number, not the run name (⚑A)."
+    )
+
+
+def test_workdir_falls_back_to_the_run_name_before_the_experiment_exists():
+    """With ``experiment_id`` NULL, ``workdir`` stays the Plan-A name-keyed path.
+
+    Gate 0 runs before any experiment exists, and the daemon mkdirs its workdir
+    unconditionally, so there must always be a real derivable path. Gate 0 does
+    not stage data there — it just needs the path to be non-null and mkdir-able.
+    """
+    from sluice.core.context import resolve_context
+
+    config = make_config(local_staging_dir="/staging")
+
+    ctx = resolve_context({"name": "run_A", "experiment_id": None}, config)
+
+    assert ctx.workdir == pathlib.Path("/staging/run_A"), (
+        "while experiment_id is NULL the name-keyed fallback must apply, so "
+        "gate 0 always has a mkdir-able workdir (⚑A)."
+    )
+
+
+def test_unsafe_run_name_is_refused_even_on_the_experiment_keyed_branch():
+    """An unsafe run NAME is refused whether or not ``experiment_id`` is set.
+
+    The traversal defense is unconditional on purpose. Keying the path on the
+    experiment number would technically keep a hostile name off *this* path, but
+    "resolve_context never builds a context for an unsafe name" is a simpler
+    invariant than "…unless the experiment exists", and the name travels onward
+    on ``context.run_row`` to gates that build their own paths from it. Costs one
+    comparison; removes a whole class of "but which branch was I on?" reasoning.
+    """
+    from sluice.core.context import resolve_context
+
+    config = make_config(local_staging_dir="/staging")
+
+    with pytest.raises(ValueError, match=re.escape("../evil")):
+        resolve_context({"name": "../evil", "experiment_id": 4471}, config)
+
+
+def test_workdir_does_not_resolve_symlinks(tmp_path):
+    r"""``workdir`` preserves a symlinked staging root — ``.absolute()``, never ``.resolve()``.
+
+    Load-bearing for NVD (⚑A, PP ``:1113-1118``): the ``/staging`` symlink must
+    survive into the paths NVD's by-lane globs are built from, because execute
+    nodes resolve that symlink themselves. Calling ``.resolve()`` here would bake
+    in this host's real path and break those globs off-node.
+    """
+    from sluice.core.context import resolve_context
+
+    real_staging = tmp_path / "real_staging"
+    real_staging.mkdir()
+    linked_staging = tmp_path / "staging_link"
+    linked_staging.symlink_to(real_staging)
+
+    config = make_config(local_staging_dir=str(linked_staging))
+    ctx = resolve_context({"name": "run_A", "experiment_id": 4471}, config)
+
+    assert str(linked_staging) in str(ctx.workdir), (
+        "the symlinked staging root must survive into workdir — resolving it "
+        "would break NVD's by-lane globs on execute nodes (⚑A)."
     )
