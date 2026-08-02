@@ -67,6 +67,7 @@ from rich.table import Table
 from rich.text import Text
 
 from sluice.config import ConfigError, load_config
+from sluice.config.setup import apply_plan, plan_setup
 from sluice.core import control
 from sluice.core.daemon import assemble_registry
 from sluice.core.profile import REFERENCE_PROFILES
@@ -503,6 +504,92 @@ def pause(context: typer.Context, reason: str = _REASON_OPTION) -> None:
 def resume(context: typer.Context, reason: str = _REASON_OPTION) -> None:
     """Let the daemon advance runs again, clearing a global pause."""
     _call_op(_settings(context), control.resume, reason=reason)
+
+
+@app.command()
+def setup(
+    home: str = typer.Option(
+        None, "--home", help="Where sluice keeps its files.", metavar="PATH"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would change without writing anything."
+    ),
+) -> None:
+    """Create or upgrade this installation — safe to re-run after every release.
+
+    On a fresh machine this creates [cyan]~/.sluice[/cyan], migrates the database,
+    and writes a config with every key the current version knows about.
+
+    On an existing one it [bold]adds only what is missing[/bold]. Values you have
+    already set are never overwritten — not by a default, not by a new release's
+    opinion — so upgrading is safe without reading a diff first.
+    """
+    plan = plan_setup(home=home)
+
+    _out.print()
+    _out.print(
+        f"[bold]{'Upgrading' if plan.is_upgrade else 'Creating'}[/bold] sluice "
+        f"installation at [cyan]{plan.home}[/cyan]"
+    )
+
+    if plan.added_with_default:
+        table = Table(box=None, pad_edge=False, header_style="bold dim")
+        table.add_column("NEW KEY")
+        table.add_column("VALUE", overflow="fold")
+        for key in sorted(plan.added_with_default):
+            value = plan.added_with_default[key]
+            table.add_row(key, str(value) if value != "" else "[dim](empty)[/dim]")
+        _out.print()
+        _out.print(table)
+    elif plan.is_upgrade:
+        _out.print("\n[green]No new keys[/green] — this install is already current.")
+
+    if plan.unknown_keys:
+        _out.print(
+            f"\n[yellow]{len(plan.unknown_keys)} key(s) in your config are not "
+            "used by this version[/yellow] (left untouched): "
+            + ", ".join(plan.unknown_keys)
+        )
+
+    if plan.needs_attention:
+        _out.print(
+            "\n[bold red]These need a real value before sluice can run:[/bold red]"
+        )
+        needs = Table(box=None, pad_edge=False, header_style="bold dim")
+        needs.add_column("KEY")
+        needs.add_column("WHAT IT IS", overflow="fold")
+        for field in plan.needs_attention:
+            needs.add_row(Text(field.name, style="red"), field.help)
+        _out.print(needs)
+
+    if dry_run:
+        _out.print("\n[dim]--dry-run: nothing was written.[/dim]")
+        return
+
+    with _guard():
+        try:
+            result = apply_plan(plan)
+        except (ValueError, OSError) as setup_failure:
+            _err.print(f"[red]sluice setup:[/red] {setup_failure}")
+            raise typer.Exit(EXIT_REFUSED) from None
+
+    _out.print(f"\n[green]Wrote[/green] {plan.config_path}")
+    if result.database_initialised:
+        _out.print("[green]Database[/green] migrated to the current schema.")
+    if result.created_secret_placeholders:
+        _out.print("\n[bold]Empty credential files created — fill these in:[/bold]")
+        for secret_path in result.created_secret_placeholders:
+            _out.print(f"    [cyan]{secret_path}[/cyan]")
+
+    remaining = [field.name for field in plan.needs_attention]
+    if remaining:
+        _out.print(
+            f"\n[yellow]Next:[/yellow] edit [cyan]{plan.config_path}[/cyan] and set "
+            f"{len(remaining)} value(s) listed above, then run "
+            "[cyan]sluice status[/cyan] to check it loads."
+        )
+    else:
+        _out.print("\n[green]Ready.[/green] Try: [cyan]sluice status[/cyan]")
 
 
 def main(argv=None) -> int:

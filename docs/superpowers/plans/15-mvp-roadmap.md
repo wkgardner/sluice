@@ -267,3 +267,41 @@ environment is still what executes. Keeping that checkout on the right ref is a 
 **Also fixed in passing:** production builds its command from `Path.home() / "nvd"`, which is
 errata **A7/D2** — an install-location coupling. sluice reads `nvd_repo_dir` by subscript, so a
 missing key is a loud config error rather than a silently wrong path.
+
+---
+
+## 11. Increment 8 — `sluice setup` and the config schema
+
+Not in the original §3a sequence; added at Will's request once the pipeline was complete, because
+"the code works" and "someone can install it" are different milestones.
+
+**The requirement was explicitly two jobs in one command:** initialise a fresh install, and
+re-initialise after a sluice release. That second job is what drove the design — the rule that
+**an existing value is never overwritten** is what makes an upgrade safe to run without reading a
+diff first. A setup that reset a tuned `parallel_downloads` on every release would be unusable
+exactly when it is most needed.
+
+**`~/.sluice` holds what sluice owns**; the operator supplies only paths to things that already
+exist in the world. `nvd-launch/` living there is load-bearing rather than tidy: it must be on
+local disk (errata D2), and a home directory is local on every host sluice runs on, so the default
+is correct rather than merely convenient. A test asserts the default cannot trip the D2 guard.
+
+**The schema is not load-time validation** — `load_config` still validates nothing, and consumers
+still read by subscript at the point of use. The schema exists so setup can *generate* and
+*upgrade* a config and explain each key.
+
+**It cannot drift**, which was the objection to declaring a key list at all. `tests/
+test_config_schema.py` parses the source tree with `ast` and asserts the schema covers exactly the
+keys the code reads — in both directions. A gate adding a key without a schema entry fails; a
+schema entry nothing reads fails too. (Regex was tried first and matched a `config["key"]` inside
+the schema's own docstring; `ast` is the same technique the import guards already use.)
+
+**`config.example.json` was regenerated from the schema and shrank from 77 keys to 44.** The 34
+removed were leftovers from the original design of record that no code reads — an operator
+configuring them would have been setting values with no effect. A guard now keeps the example and
+the schema equal.
+
+**Still open:** `sluice doctor` (errata E2). Setup proves the config is *complete*; doctor would
+prove it *works* — that the sequencing host answers, the reference paths exist, the NVD repo is on
+its intended ref, LabKey accepts the key. That is the natural next thing, and the one that would
+otherwise get discovered on deployment day.
