@@ -1777,3 +1777,21 @@ def test_detection_survives_a_notifier_that_returns_no_thread_id(tmp_path):
     finally:
         connection.close()
     assert row["slack_thread_ts"] is None
+
+
+def test_an_empty_watch_dir_is_refused_rather_than_scanning_the_cwd():
+    """``watch_dir=""`` raises instead of sweeping the current directory.
+
+    ``pathlib.Path("")`` is the CURRENT DIRECTORY, so an unset watch_dir would
+    mint a run for every subdirectory of wherever the daemon was started. This is
+    not hypothetical: the first end-to-end dry run had watch_dir unset and
+    detected ``.git``, ``.claude``, ``docs``, ``sluice`` and ``tests`` as runs,
+    then quarantined all five.
+
+    Guardrail §8 — no silent fallback. An empty value is a configuration mistake,
+    not an instruction to scan everything in reach.
+    """
+    from sluice.core.daemon import watch_dir_lister
+
+    with pytest.raises(ValueError, match="refusing to scan the current directory"):
+        watch_dir_lister({"watch_dir": "  "})

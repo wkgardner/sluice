@@ -69,9 +69,11 @@ from rich.text import Text
 from sluice.config import ConfigError, load_config
 from sluice.config.setup import apply_plan, plan_setup
 from sluice.core import control
-from sluice.core.daemon import assemble_registry
+from sluice.core.daemon import assemble_registry, run_forever
 from sluice.core.profile import REFERENCE_PROFILES
-from sluice.gates.profiles import PRODUCTION_PROFILES
+from sluice.gates.detection import list_remote_runs
+from sluice.gates.profiles import PRODUCTION_PROFILES, PRODUCTION_VERSION
+from sluice.gates.slack import make_notifier
 
 __all__ = ["app", "main"]
 
@@ -504,6 +506,44 @@ def pause(context: typer.Context, reason: str = _REASON_OPTION) -> None:
 def resume(context: typer.Context, reason: str = _REASON_OPTION) -> None:
     """Let the daemon advance runs again, clearing a global pause."""
     _call_op(_settings(context), control.resume, reason=reason)
+
+
+@app.command()
+def daemon(
+    context: typer.Context,
+    once: bool = typer.Option(
+        False, "--once", help="Run a single cycle and exit, instead of looping."
+    ),
+) -> None:
+    """Start the reconcile loop — the process that actually does the work.
+
+    [bold]The composition root.[/bold] Everything the core cannot import itself is
+    assembled here and injected: the production profile registry, the rsync
+    detection lister, and the Slack notifier. That separation is what keeps
+    [cyan]sluice.core[/cyan] free of gate and service code; the cost is that
+    nothing runs until something wires them together, which is this.
+
+    Runs until interrupted. One instance at a time — a second start fails on the
+    lock rather than racing the first.
+    """
+    settings = _settings(context)
+    with _guard():
+        config = load_config(settings.config)
+        registry = _registry()
+        notifier = make_notifier(config)
+        _out.print(
+            f"[green]Starting daemon[/green] — profile "
+            f"[cyan]{PRODUCTION_VERSION}[/cyan], notifications "
+            f"{'[green]on[/green]' if notifier else '[dim]off[/dim]'}"
+        )
+        run_forever(
+            config,
+            registry=registry,
+            default_pipeline_version=PRODUCTION_VERSION,
+            lister=list_remote_runs,
+            notifier=notifier,
+            max_cycles=1 if once else None,
+        )
 
 
 @app.command()
