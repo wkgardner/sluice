@@ -52,7 +52,49 @@ writing Python. For a second person to use sluice, they need at minimum to *see*
 *forgive* a quarantine. This is Plan C, and it is the single largest thing standing between "the
 engine works" and "a colleague can use it."
 
-## 4. The road, in three milestones
+## 3a. SCOPE FIXED 2026-08-01 (Will) — read this before §4
+
+Two constraints landed after §4 was written; §4's milestones are superseded by the sequence here.
+
+- **Target is a working pipeline through `nvd`.** The Globus pair is **deferred** — Will takes it
+  after vacation. This needs no special work: the gate map §7 already sanctions it (*"a site that
+  does not want Globus … ships a profile variant with them DISABLED — and then the run completes at
+  `nvd` deliberately, never a silent 'final gate lies'"*, C4 structural). So `production-v3.1`
+  ships with `globus_submit`, `globus_verify`, **and** `registration` DISABLED, and enabling the
+  pair later is a profile change plus one increment, with nothing behind it reworked.
+- **python-poller is not a conflict.** Will controls it and will disable it. The two-systems-
+  detecting-the-same-runs question in §6 is closed.
+- **Deadline: end of this week**, then Will is away and a colleague operates sluice **unattended**.
+
+### The ordering principle this forces
+
+Every increment leaves a *shippable* pipeline (again the DISABLED-gate property). So the question
+is not "what is left" but **"what do we leave Will's colleague with if the last item slips?"**
+
+`nvd` is the highest-risk port in the project and the most likely to overrun. It must therefore be
+the thing that slips — never the thing whose slippage makes everything else unusable. Operability
+(CLI, alerting) is what makes an unattended week survivable; gates are what make the pipeline
+complete. **Operability goes first.**
+
+| # | Increment | Rough | Why here |
+|---|---|---|---|
+| 1 | `production-v3.1` profile + CephFS disk (D1) | 0.5d | Blocking, entirely offline, no credentials needed. |
+| 2 | `download` gate (008) | 1d | First real data. D6 threadpool, ⚑A `experiment_id`-aware workdir. |
+| 3 | `checksum` gate (009) | 0.25d | Small, idempotent. |
+| 4 | **Minimal CLI** | 0.75d | **Must not be cuttable.** Without it nobody but Will can operate sluice. |
+| 5 | **Slack notifier** | 0.5d | **Must not be cuttable.** Implements the `Notifier` Protocol that `events.py:45` always reserved for Plan B. Without it a Tuesday quarantine is discovered Friday. |
+| 6 | `samplesheet` gate (010) | 0.5d | NVD tool, `--force` makes re-entry idempotent. |
+| 7 | `nvd` gate (011) | 1.5d | Riskiest. D2/A7 launch dir, D3 append log, D5 heartbeats. Budget the most review here; let this be what slips. |
+
+≈5 days of work against ~4–5 available. **It fits only if nothing blocks.** The likeliest blocker is
+not code: increments 2 and 7 need real credentials and real paths (`remote_user`, `remote_host`,
+`password_file` / `local_source_dir`; the `nvd` CLI on the host sluice will run on). **Confirm those
+early** — a credential discovered missing on Thursday is fatal to the deadline, and cannot be
+worked around by building faster.
+
+---
+
+## 4. The road, in three milestones *(superseded by §3a — kept for the reasoning)*
 
 Cycle counts are calibrated against observed velocity — three increments landed on 2026-07-31 in
 one day — but `download` and `nvd` are materially heavier than anything built so far, so they carry
