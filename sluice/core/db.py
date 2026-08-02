@@ -308,6 +308,20 @@ def _migration_009_checksummed(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_010_samplesheet_created(conn: sqlite3.Connection) -> None:
+    """Add the ``samplesheet`` gate's satisfaction column to ``runs`` (plan 15 increment 6).
+
+    ONE column — ``samplesheet_created`` — per the incremental-migration policy
+    (⚑3). The gate writes ``samplesheet.csv`` into the run's staging tree and
+    persists no token, so ``persists`` is empty and nothing here mirrors an output.
+
+    ``INTEGER NOT NULL DEFAULT 0``, as with 007-009.
+    """
+    conn.execute(
+        "ALTER TABLE runs ADD COLUMN samplesheet_created INTEGER NOT NULL DEFAULT 0",
+    )
+
+
 # (version, name, apply_fn) each. The framework (unit 4) runs each apply_fn in its
 # own BEGIN IMMEDIATE/COMMIT and records the version only on success, so the
 # apply_fns issue plain DDL and touch neither the transaction nor the ledger.
@@ -323,6 +337,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     (7, "007_labkey_registered", _migration_007_labkey_registered),
     (8, "008_downloaded", _migration_008_downloaded),
     (9, "009_checksummed", _migration_009_checksummed),
+    (10, "010_samplesheet_created", _migration_010_samplesheet_created),
 )
 
 

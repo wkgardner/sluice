@@ -241,3 +241,29 @@ process. It broke 42 unrelated tests that happened to run afterwards.
 The fix is a context manager that restores the previous configuration unconditionally, and the
 invariant is now pinned by `test_main_restores_global_logging_configuration`. The general rule: a
 function that anything can call in-process must leave global state as it found it.
+
+---
+
+## 10. Recorded deviation: the samplesheet gate does not check out the NVD repo
+
+Production's `generate_by_lane_samplesheet` first calls `ensure_nvd_repo_ref`, which runs
+`git checkout -f main` inside the NVD repository to pin the tool version before generating
+(PP `nvd_helpers.py:166`). sluice's `samplesheet` gate does **not** port this.
+
+**Why not.** Two independent reasons:
+
+1. **`-f` discards uncommitted work** in a repository a human may be actively using. A per-run
+   pipeline gate silently resetting someone's working tree is a surprising and unrecoverable side
+   effect, and it is exactly the class of destructive action ADR-0005 puts in operators' hands.
+2. **Which version of an external tool is installed is a deployment concern**, not something a
+   per-run gate should assert. Re-asserting it once per run is both the wrong place and the wrong
+   frequency.
+
+**What replaces it.** Version determinism is expressed by pointing `nvd_repo_dir` at the intended
+checkout, and the gate runs `pixi run --manifest-path <nvd_repo_dir>/pyproject.toml`, so the pinned
+environment is still what executes. Keeping that checkout on the right ref is a deployment step
+(and belongs in `sluice doctor`, errata E2, which should *report* the ref rather than change it).
+
+**Also fixed in passing:** production builds its command from `Path.home() / "nvd"`, which is
+errata **A7/D2** — an install-location coupling. sluice reads `nvd_repo_dir` by subscript, so a
+missing key is a loud config error rather than a silently wrong path.
