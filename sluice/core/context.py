@@ -84,15 +84,33 @@ def is_safe_path_component(run_name: str) -> bool:
 def resolve_context(run_row, config: Mapping[str, object]) -> RunContext:
     r"""Derive a ``RunContext`` from an already-fetched run row and loaded config.
 
-    Pure path arithmetic over its inputs (fact 3): ``workdir`` is
-    ``{config["local_staging_dir"]}/{run_row["name"]}`` — name-keyed, B2 ⚑1
-    approved, and on no other root (§3.3: never ``/scratch``/system-temp) —
-    and ``db_path`` is ``config["state_file"]``. No ``.resolve()``, no
-    ``mkdir``, no DB access: the daemon creates ``workdir`` and fetches the
-    row before calling (plan 04 §1, §7). Required keys are read by subscript,
-    never ``.get`` with a default (guardrail §8), and the name is validated as
-    a single safe path component before it becomes a path (§3.3) — this is
-    the boundary where a stored string identity turns into a filesystem path.
+    Pure path arithmetic over its inputs (fact 3): ``db_path`` is
+    ``config["state_file"]``, and ``workdir`` is keyed by whichever identity the
+    run has reached (⚑A, gate map §5, APPROVED 2026-07-30) —
+
+    * ``{local_staging_dir}/{experiment_id}`` once gate 0 has created the LabKey
+      experiment. This is the production layout (PP ``_experiment_staging_dir``),
+      and it is why the experiment number a human reads in LabKey is also how
+      they find the run's files on disk.
+    * ``{local_staging_dir}/{name}`` while ``experiment_id`` is still NULL — the
+      Plan-A name-keyed path (B2 ⚑1). Gate 0 is what *creates* the experiment, so
+      it necessarily runs before one exists, and the daemon ``mkdir``s
+      ``context.workdir`` unconditionally for every gate. The fallback is what
+      keeps ``workdir`` a non-optional ``Path``, so that ``mkdir`` stays sound.
+
+    On no other root either way (§3.3: never ``/scratch``/system-temp). No
+    ``.resolve()`` — a symlinked staging root must survive into the path, because
+    NVD's by-lane globs are resolved on execute nodes, and baking in this host's
+    real path would break them (⚑A, PP ``:1113-1118``). No ``mkdir``, no DB
+    access: the daemon creates ``workdir`` and fetches the row before calling
+    (plan 04 §1, §7). Required keys are read by subscript, never ``.get`` with a
+    default (guardrail §8).
+
+    The run name is validated as a single safe path component **unconditionally**
+    — on both branches, not only when it is about to become the path. The simpler
+    invariant ("this function never builds a context for an unsafe name") beats a
+    branch-dependent one, and the name travels onward on ``run_row`` to gates that
+    build paths of their own.
 
     The run row is snapshotted onto the context (ADR-0006 d.3): a resuming gate
     reads its prior tokens (experiment id, globus task id) off
@@ -114,19 +132,31 @@ def resolve_context(run_row, config: Mapping[str, object]) -> RunContext:
     # Injection defense at the identity→path boundary (§3.3): without this,
     # Path("/staging") / "../../etc" escapes the staging root. The message
     # carries the raw offending name so the daemon's quarantine-grade log
-    # (§7) says which stored name was refused.
+    # (§7) says which stored name was refused. Checked on BOTH branches below.
     if not is_safe_path_component(run_name):
         raise ValueError(
             f'run name "{run_name}" is not a single safe path component: '
             'it must not contain "/" or "\\" and must not equal "", ".", '
             'or ".." (plan 04 §3.3)'
         )
+    # ⚑A: key staging on the experiment number once it exists, else on the name.
+    # Read by subscript — experiment_id is a real runs column (migration 001)
+    # present in every row sqlite hands back, so a KeyError here means an
+    # under-populated hand-built row, which should fail loud (guardrail §8).
+    experiment_id = run_row["experiment_id"]
+    staging_root = pathlib.Path(config["local_staging_dir"])
+    # str(): experiment_id is an INTEGER column, and Path / int raises.
+    workdir = (
+        staging_root / run_name
+        if experiment_id is None
+        else staging_root / str(experiment_id)
+    )
     # Keyed comprehension, not dict(run_row): a sqlite3.Row iterates values,
     # not items, so dict(<Row>) raises — build the plain-dict snapshot the
     # RunContext seal expects (ADR-0006 d.3).
     run_snapshot = {key: run_row[key] for key in run_row.keys()}
     return RunContext(
-        workdir=pathlib.Path(config["local_staging_dir"]) / run_name,
+        workdir=workdir,
         db_path=pathlib.Path(config["state_file"]),
         config=config,
         run_row=run_snapshot,
