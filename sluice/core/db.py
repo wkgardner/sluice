@@ -271,6 +271,26 @@ def _migration_007_labkey_registered(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_008_downloaded(conn: sqlite3.Connection) -> None:
+    """Add the ``download`` gate's satisfaction column to ``runs`` (plan 15 increment 2).
+
+    ONE column — ``downloaded`` — per the incremental-migration policy (⚑3):
+    each production gate ships its own migration alongside it, superseding
+    gate-map §6's single coherent migration. The gate's *outputs* need no column:
+    it produces ``raw_seqs/`` on disk, not a persisted token, so ``persists`` is
+    empty and nothing here mirrors it.
+
+    ``INTEGER NOT NULL DEFAULT 0`` for the same reason as 007: a nullable
+    satisfaction column gives reconcile three-valued logic (``WHERE col = 0``
+    silently misses NULL), and the constant default keeps the ALTER legal on a
+    populated table — pre-existing rows land unsatisfied, which is correct
+    because they never ran the gate.
+    """
+    conn.execute(
+        "ALTER TABLE runs ADD COLUMN downloaded INTEGER NOT NULL DEFAULT 0",
+    )
+
+
 # (version, name, apply_fn) each. The framework (unit 4) runs each apply_fn in its
 # own BEGIN IMMEDIATE/COMMIT and records the version only on success, so the
 # apply_fns issue plain DDL and touch neither the transaction nor the ledger.
@@ -284,6 +304,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     (5, "005_mock_gate_columns", _migration_005_mock_gate_columns),
     (6, "006_excluded_gates", _migration_006_excluded_gates),
     (7, "007_labkey_registered", _migration_007_labkey_registered),
+    (8, "008_downloaded", _migration_008_downloaded),
 )
 
 

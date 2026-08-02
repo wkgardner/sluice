@@ -1078,7 +1078,7 @@ def test_index_migration_applies_to_a_pre_existing_database(tmp_path, monkeypatc
 
 
 def test_all_migrations_yield_the_top_version_and_every_object(tmp_path):
-    """The full ladder's end state: version 7, all tables and the index present.
+    """The full ladder's end state: head version, all tables and the index present.
 
     Migration 005 (mock gate columns) is subsystem 2's, appended per plan 02
     §3.5; 006 (``excluded_gates``) is subsystem 8's, appended per plan 08
@@ -1087,11 +1087,13 @@ def test_all_migrations_yield_the_top_version_and_every_object(tmp_path):
     gate). The end-state literal stays hardcoded — generalizing to
     ``max(MIGRATIONS)`` would pin nothing; this test is edited consciously each
     time the ladder grows. ``initialize_database`` on a fresh path reaches
-    ``schema_version == 7`` with ``schema_migrations``, ``runs``,
+    ``schema_version`` at head with ``schema_migrations``, ``runs``,
     ``poller_metadata``, ``control_audit`` and ``idx_runs_eligible`` all created.
     """
     with initialized_connection(tmp_path / "state.db") as connection:
-        assert sluice.core.db.schema_version(connection) == 7
+        assert sluice.core.db.schema_version(connection) == len(
+            sluice.core.db.MIGRATIONS
+        )
 
         tables = {
             row["name"]
@@ -1115,13 +1117,16 @@ def test_all_migrations_yield_the_top_version_and_every_object(tmp_path):
         assert "idx_runs_eligible" in indexes
 
 
-# The six OTHER production satisfaction columns (⚑3): each arrives with its own
-# gate in its own migration (008+), NEVER here. Migration 007 adds ONLY
-# ``labkey_registered``; this set is the incremental-migration guard. Names track
-# plan 13 §6's carry-forward (``downloaded``/``checksummed``/… ), distinct from the
-# older placeholder set in ``PRODUCTION_GATE_COLUMNS`` above.
-LATER_PRODUCTION_SATISFACTION_COLUMNS = {
-    "downloaded",
+# The production satisfaction columns that have NOT shipped yet (⚑3): each
+# arrives with its own gate in its own migration, never bundled ahead of it. This
+# set is the incremental-migration guard, and it SHRINKS by one entry each time a
+# gate lands — a name still listed here must not exist in the schema. Names track
+# plan 13 §6's carry-forward, distinct from the older placeholder set in
+# ``PRODUCTION_GATE_COLUMNS`` above.
+#
+# Shipped so far: ``labkey_registered`` (007, experiment gate), ``downloaded``
+# (008, download gate).
+UNSHIPPED_PRODUCTION_SATISFACTION_COLUMNS = {
     "checksummed",
     "samplesheet_created",
     "authority_registered",
@@ -1152,11 +1157,12 @@ def test_migration_007_adds_labkey_registered_column(tmp_path):
     assert column["notnull"] == 1
     assert column["dflt_value"] == "0"
 
-    # The incremental-migration guard: none of the six OTHER production
-    # satisfaction columns leaked in with 007.
-    leaked = set(info) & LATER_PRODUCTION_SATISFACTION_COLUMNS
+    # The incremental-migration guard: no gate column has landed ahead of the
+    # gate that owns it.
+    leaked = set(info) & UNSHIPPED_PRODUCTION_SATISFACTION_COLUMNS
     assert leaked == set(), (
-        f"migration 007 must add labkey_registered ONLY; leaked: {sorted(leaked)}"
+        "a production satisfaction column landed ahead of its gate; each ships "
+        f"with its own migration (⚑3). Leaked: {sorted(leaked)}"
     )
 
 
@@ -2152,3 +2158,43 @@ def test_is_daemon_eligible_accepts_a_plain_mapping():
         sluice.core.db.is_daemon_eligible({"lifecycle": "active", "errored_at": None})
         is True
     )
+
+
+# --------------------------------------------------------------------------
+# Migration 008 — the download gate's satisfaction column (plan 15 increment 2).
+#
+# Incremental-migration policy (plan 13 ⚑3): one satisfaction column per gate,
+# shipped WITH its gate. 008 owns only `downloaded`.
+# --------------------------------------------------------------------------
+
+
+def test_migration_008_adds_downloaded_not_null_default_zero(tmp_path):
+    """``runs.downloaded`` exists as ``INTEGER NOT NULL DEFAULT 0`` at head.
+
+    Never nullable: a nullable satisfaction column gives reconcile three-valued
+    logic (``WHERE col = 0`` silently misses NULL), and the constant default
+    keeps the ALTER legal on a populated table — pre-existing rows land
+    unsatisfied, which is correct because they never ran the gate.
+    """
+    with initialized_connection(tmp_path / "state.db") as connection:
+        column = {
+            row["name"]: row for row in connection.execute("PRAGMA table_info(runs)")
+        }["downloaded"]
+
+    assert column["type"] == "INTEGER"
+    assert column["notnull"] == 1, (
+        "downloaded must be NOT NULL — a nullable satisfaction column gives "
+        "reconcile three-valued logic"
+    )
+    assert column["dflt_value"] == "0"
+
+
+def test_migration_ladder_head_is_008(tmp_path):
+    """The ladder reaches 008 and records it.
+
+    Pins that the download gate's migration is actually wired into MIGRATIONS
+    rather than merely defined — a gate whose column never lands would raise
+    KeyError in reconcile on every look.
+    """
+    with initialized_connection(tmp_path / "state.db") as connection:
+        assert sluice.core.db.schema_version(connection) == 8
