@@ -291,6 +291,23 @@ def _migration_008_downloaded(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_009_checksummed(conn: sqlite3.Connection) -> None:
+    """Add the ``checksum`` gate's satisfaction column to ``runs`` (plan 15 increment 3).
+
+    ONE column — ``checksummed`` — per the incremental-migration policy (⚑3).
+    The gate verifies the delivered manifest against the transferred files and
+    persists no token: whether the data is intact is re-derivable by re-reading
+    it, so ``persists`` is empty and nothing here mirrors an output.
+
+    ``INTEGER NOT NULL DEFAULT 0``, as with 007/008 — a nullable satisfaction
+    column gives reconcile three-valued logic, and the constant default keeps the
+    ALTER legal on a populated table.
+    """
+    conn.execute(
+        "ALTER TABLE runs ADD COLUMN checksummed INTEGER NOT NULL DEFAULT 0",
+    )
+
+
 # (version, name, apply_fn) each. The framework (unit 4) runs each apply_fn in its
 # own BEGIN IMMEDIATE/COMMIT and records the version only on success, so the
 # apply_fns issue plain DDL and touch neither the transaction nor the ledger.
@@ -305,6 +322,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     (6, "006_excluded_gates", _migration_006_excluded_gates),
     (7, "007_labkey_registered", _migration_007_labkey_registered),
     (8, "008_downloaded", _migration_008_downloaded),
+    (9, "009_checksummed", _migration_009_checksummed),
 )
 
 
