@@ -11,10 +11,12 @@ lint = "ruff check sluice/ tests/ && ruff format --check sluice/ tests/"
 format = "ruff format sluice/ tests/"
 sluice = "python -m sluice.cli"
 
-# Core deps only at bootstrap. slack-sdk, labkey, typer, rich, and fastapi
-# arrive with the plans that need them (B and C).
+# slack-sdk, labkey, and fastapi still arrive with the plans that need them.
+# typer + rich landed 2026-08-02 with the operator CLI (plan 15 increment 4).
 [dependencies]
 python = ">=3.14.3,<3.15"
 pytest = ">=9.0.2,<10"
 structlog = "*"
 ruff = ">=0.14,<0.15"
+typer = "*"
+rich = "*"
