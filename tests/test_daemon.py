@@ -1689,3 +1689,91 @@ def test_production_stamp_requires_registry_entry_at_startup(config):
         assert get_metadata(connection, control.PIPELINE_PROFILE_KEY) is None
     finally:
         connection.close()
+
+
+# ---------------------------------------------------------------------------
+# The A5 seam, completed (plan 15 increment 5): the daemon persists the thread
+# id its notifier returns, so replies find their thread across restarts.
+# ---------------------------------------------------------------------------
+
+
+def test_detection_persists_the_thread_id_the_notifier_returns(tmp_path):
+    """``open_run_thread``'s return value lands in ``runs.slack_thread_ts``.
+
+    The seam ``safe_notify``'s docstring always described — the thread id "rides
+    back to the daemon" — but which nothing acted on: the column existed from
+    migration 001 and no code ever wrote it, so every notification would have
+    posted un-threaded.
+
+    The daemon does the write, not the notifier, which keeps it the single writer
+    of run state.
+    """
+    import sqlite3
+
+    from sluice.core.daemon import detect_new_runs, prepare_database
+    from sluice.core.profile import REFERENCE_PROFILES
+
+    config = {
+        "state_file": str(tmp_path / "state.db"),
+        "watch_dir": str(tmp_path / "watch"),
+    }
+    prepare_database(
+        config, registry=REFERENCE_PROFILES, default_pipeline_version="reference-v1"
+    )
+
+    class ThreadOpeningNotifier:
+        def open_run_thread(self, run_name, experiment_id=None, size_tb=None):
+            return "1722600000.000100"
+
+    detected = detect_new_runs(
+        config,
+        lister=lambda _config: [("SEQ_A", 1.0)],
+        notifier=ThreadOpeningNotifier(),
+    )
+
+    assert detected == ["SEQ_A"]
+    connection = sqlite3.connect(config["state_file"])
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            "SELECT slack_thread_ts FROM runs WHERE name = 'SEQ_A'"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row["slack_thread_ts"] == "1722600000.000100"
+
+
+def test_detection_survives_a_notifier_that_returns_no_thread_id(tmp_path):
+    """A notifier returning ``None`` leaves the column NULL and detection succeeds.
+
+    The unconfigured case (``safe_notify(None, ...)`` returns ``None``) and the
+    already-threaded case both land here. Neither is an error, and neither may
+    roll back a detection that already committed.
+    """
+    import sqlite3
+
+    from sluice.core.daemon import detect_new_runs, prepare_database
+    from sluice.core.profile import REFERENCE_PROFILES
+
+    config = {
+        "state_file": str(tmp_path / "state.db"),
+        "watch_dir": str(tmp_path / "watch"),
+    }
+    prepare_database(
+        config, registry=REFERENCE_PROFILES, default_pipeline_version="reference-v1"
+    )
+
+    detected = detect_new_runs(
+        config, lister=lambda _config: [("SEQ_B", 1.0)], notifier=None
+    )
+
+    assert detected == ["SEQ_B"]
+    connection = sqlite3.connect(config["state_file"])
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            "SELECT slack_thread_ts FROM runs WHERE name = 'SEQ_B'"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row["slack_thread_ts"] is None

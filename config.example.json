@@ -38,6 +38,7 @@
   "slack_enabled": false,
   "slack_channel": "<slack-channel-id>",
   "slack_user_id_file": "<path/to/slack_user_id_file>",
+  "slack_bot_token_file": "<path/to/slack_bot_token_file>",
 
   "labkey_enabled": false,
   "labkey_metadata_check_enabled": false,

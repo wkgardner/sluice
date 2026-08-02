@@ -11,8 +11,9 @@ lint = "ruff check sluice/ tests/ && ruff format --check sluice/ tests/"
 format = "ruff format sluice/ tests/"
 sluice = "python -m sluice.cli"
 
-# slack-sdk, labkey, and fastapi still arrive with the plans that need them.
-# typer + rich landed 2026-08-02 with the operator CLI (plan 15 increment 4).
+# labkey and fastapi still arrive with the plans that need them.
+# typer + rich landed 2026-08-02 with the operator CLI (plan 15 increment 4);
+# slack-sdk with the notifier (increment 5). ADR-0003 d.3: gates/ only, never core.
 [dependencies]
 python = ">=3.14.3,<3.15"
 pytest = ">=9.0.2,<10"
@@ -20,3 +21,4 @@ structlog = "*"
 ruff = ">=0.14,<0.15"
 typer = "*"
 rich = "*"
+slack-sdk = "*"

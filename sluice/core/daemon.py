@@ -312,7 +312,19 @@ def detect_new_runs(config, *, lister=None, notifier=None) -> list[str]:
             "run.detected",
             **{"run.name": name, "run.pipeline_version": default_pipeline_version},
         )
-        safe_notify(notifier, "open_run_thread", name)
+        # The A5 seam, completed: open_run_thread RETURNS the notifier's thread id
+        # and the daemon persists it, so replies find their thread across restarts.
+        # The daemon stays the sole writer of run state — a notifier that wrote its
+        # own column would be a second authority over the runs table.
+        thread_id = safe_notify(notifier, "open_run_thread", name)
+        if thread_id:
+            # Its own short transaction, outside the detection one: a notifier
+            # round-trip must never be inside a write lock (§5), and a failure to
+            # record the id must not roll back the detection that already
+            # succeeded. Worst case the thread id is lost and the next
+            # open_run_thread opens a fresh thread — noisy, never incorrect.
+            with write_txn(db_path) as connection:
+                update_run(connection, name, {"slack_thread_ts": str(thread_id)})
     return newly_detected
 
 
