@@ -167,3 +167,42 @@ environment, not about this code.
 Start Milestone 1 increment 1 (`production-v3.1` profile + D1 disk strategy). It is small, it is
 blocking, it is entirely offline, and it needs no credential decisions — so it can proceed while §6
 is being settled.
+
+---
+
+## 8. Deferred: automatic rewind-on-failure (raised by Will, 2026-08-02)
+
+**The observation.** The download gate refuses an empty listing, and a bad/partial transfer that
+somehow passes download surfaces at `checksum` instead. For that failure specifically, the useful
+response is not "quarantine and wait for a human" but "rewind one step and re-run download."
+
+**Why it is more attractive than it first looks.** The rewind is *column-clear only* — clear
+`downloaded`, let the daemon's next look re-run the gate — which is exactly what ADR-0005 permits;
+nothing is deleted. And `rsync -avP` repairs partial files rather than re-transferring whole ones,
+so the retry is cheap. The operator-driven version already exists (`backtrack` / `reset_gate`).
+
+**Why it is nonetheless an ADR reopening, not a feature.** ADR-0002 says every gate failure
+quarantines, there is no automatic retry, and no attempt counter exists (`reset_attempts` is
+permanently refused). Automatic rewind is the thing that decision refused.
+
+**The hazard that motivated the refusal, in this exact case.** A checksum failure is ambiguous:
+
+- *corrupt or truncated transfer* → rewinding fixes it;
+- *genuinely corrupt source data* → rewinding re-transfers multi-TB, fails identically, rewinds
+  again. Unbounded, and expensive per cycle.
+
+Without a bound this is the `nvd_auto_run=false` loop-forever shape ADR-0004 was written against,
+and ADR-0002 deliberately removed the bounding mechanism. Any serious proposal must answer: what
+stops the loop, and where does that state live, given no attempt counter is permitted?
+
+**What increment 3 does now to keep the option open (no ADR change, no cost).** The checksum gate
+distinguishes its failure modes in the reason it returns:
+
+- manifest **missing / unreadable** — never fixable by re-transferring;
+- **hash mismatch** on named files — plausibly fixable by re-transferring.
+
+Collapsing both into "checksum failed" would make the future decision un-makeable without redoing
+the gate. Distinguishing them costs nothing today and is the input any rewind policy needs.
+
+**Not decided:** whether to reopen ADR-0002 at all. Revisit after the pipeline has run real samples
+and there is evidence about how often checksum failures are transient.
