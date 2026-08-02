@@ -322,6 +322,24 @@ def _migration_010_samplesheet_created(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_011_nvd_completed(conn: sqlite3.Connection) -> None:
+    """Add the ``nvd`` gate's satisfaction column to ``runs`` (plan 15 increment 7).
+
+    ONE column — ``nvd_completed`` — per the incremental-migration policy (⚑3).
+
+    **Column rename recorded (gate map §3):** production tracks the NVD stage with
+    TWO columns, ``pipeline_started`` and ``pipeline_completed`` (PP
+    ``poller_state_db.py:39-40``). sluice collapses both onto this single column,
+    because a started-but-not-finished NVD run is not a distinct state sluice
+    needs: the gate is satisfied or it is not, and an interrupted run resumes from
+    Nextflow's own session cache rather than from a database flag. Anything
+    grepping production for those two names maps both here.
+    """
+    conn.execute(
+        "ALTER TABLE runs ADD COLUMN nvd_completed INTEGER NOT NULL DEFAULT 0",
+    )
+
+
 # (version, name, apply_fn) each. The framework (unit 4) runs each apply_fn in its
 # own BEGIN IMMEDIATE/COMMIT and records the version only on success, so the
 # apply_fns issue plain DDL and touch neither the transaction nor the ledger.
@@ -338,6 +356,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     (8, "008_downloaded", _migration_008_downloaded),
     (9, "009_checksummed", _migration_009_checksummed),
     (10, "010_samplesheet_created", _migration_010_samplesheet_created),
+    (11, "011_nvd_completed", _migration_011_nvd_completed),
 )
 
 
