@@ -208,6 +208,18 @@ def watch_dir_lister(config) -> list[tuple[str, float | None]]:
         KeyError: ``config`` lacks ``watch_dir``.
     """
     watch_dir = config["watch_dir"]
+    if not str(watch_dir).strip():
+        # An empty watch_dir is NOT "scan nothing" — Path("") is the CURRENT
+        # DIRECTORY, so this would mint a run for every subdirectory of wherever
+        # the daemon happens to have been started. Observed for real: an
+        # end-to-end run with watch_dir unset detected `.git`, `docs`, `tests`
+        # and quarantined them all. Refuse instead (guardrail §8: no silent
+        # fallback).
+        raise ValueError(
+            "watch_dir is empty — refusing to scan the current directory. Set "
+            "watch_dir, or inject the production lister (sluice.gates.detection."
+            "list_remote_runs) via the daemon's lister seam"
+        )
     return sorted(
         (
             (entry.name, None)

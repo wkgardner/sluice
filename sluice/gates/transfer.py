@@ -189,8 +189,12 @@ class RsyncTransferClient:
                 empty list would otherwise read as "this run has no files" and let
                 the gate report a successful download of nothing.
         """
-        remote_dir = f"{run_name}/"
-        source = self._remote_source(remote_dir)
+        # The trailing slash is LOAD-BEARING: `rsync --list-only <dir>` lists the
+        # directory ENTRY (one line), while `<dir>/` lists its CONTENTS. It has to
+        # be appended AFTER path construction, because pathlib strips it —
+        # Path("/a/b") / "run/" is "/a/b/run". Losing it makes every run look
+        # empty, which the gate then correctly refuses as "listed zero files".
+        source = self._remote_source(run_name) + "/"
         if self.is_local_mode:
             command = ["rsync", "--list-only", source]
         else:

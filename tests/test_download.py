@@ -495,3 +495,36 @@ def test_a_permanent_failure_still_fails_after_every_pass(tmp_path):
 
     assert transferred == 0
     assert len(failures) == 1 and "permission denied" in failures[0]
+
+
+def test_the_listing_command_keeps_the_trailing_slash(tmp_path):
+    """``list_run_files`` asks rsync for the directory's CONTENTS, not its entry.
+
+    ``rsync --list-only <dir>`` prints one line describing the directory itself;
+    only ``<dir>/`` lists what is inside it. The slash therefore decides whether a
+    run appears to hold its files or to be empty.
+
+    It has to be appended after path construction because pathlib strips it —
+    ``Path("/a/b") / "run/"`` is ``/a/b/run``. That is exactly how it was lost,
+    and no unit test caught it: this file's other listing test feeds the parser a
+    canned listing, so it never exercised the command that produced it. The bug
+    only surfaced on a real end-to-end run, where every run reported "listed zero
+    files".
+    """
+    captured = {}
+
+    def capturing_runner(command, **kwargs):
+        captured["command"] = command
+        return types.SimpleNamespace(stdout="", returncode=0)
+
+    client = RsyncTransferClient(
+        {"local_source_dir": str(tmp_path / "src")}, runner=capturing_runner
+    )
+    client.list_run_files("RUN_A")
+
+    source_argument = captured["command"][-1]
+    assert source_argument.endswith("RUN_A/"), (
+        f"the listing source must end with a trailing slash, got "
+        f"{source_argument!r} — without it rsync lists the directory entry "
+        "rather than its contents and every run looks empty"
+    )
