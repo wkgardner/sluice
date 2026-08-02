@@ -4,6 +4,9 @@ A thin client over the control ops (``sluice.core.control``). It adds no policy 
 command is one control op plus formatting, so anything the CLI can do is something the audited
 control layer already sanctioned, and anything it refuses is a refusal that came from there.
 
+Built with **Typer + rich**: colour-coded status, aligned tables, and rich-formatted help. Both
+arrived as project dependencies with this CLI (plan 15 increment 4).
+
 **DEVIATION from the original Plan C shape, recorded on purpose (plan 15 §9).** This module's
 first docstring said the CLI would be an HTTP client to ``sluice.api`` because "the api is the
 authorized control-write path". This version talks to ``control`` **directly**. Two reasons:
@@ -12,18 +15,13 @@ authorized control-write path". This version talks to ``control`` **directly**. 
    op writes its ``control_audit`` row inside its own transaction — not in the API. Going direct
    keeps every write attributed and audited exactly as before. What the API adds is **remote**
    access, not authorization.
-2. *Remote access is not what is needed first.* The API means FastAPI, a lockfile change, a service
-   to supervise, and a port to secure — before anyone can unstick a single run. An operator on the
-   host the daemon runs on needs none of that.
+2. *Remote access is not what is needed first.* The API means FastAPI, a service to supervise, and
+   a port to secure — before anyone can unstick a single run. An operator on the host the daemon
+   runs on needs none of that.
 
 The API remains the right answer for operating sluice from a laptop, and this CLI is structured so
-that swapping its transport later touches only ``_run_op`` and ``_cmd_status``. Nothing else here
+that swapping its transport later touches only ``_call_op`` and the two readers. Nothing else here
 knows how the ops are reached.
-
-**stdlib ``argparse``, deliberately.** Typer and rich would be prettier, but neither is a project
-dependency yet and adding them means regenerating the lockfile. The CLI is the one thing that must
-work on whatever host the daemon runs on, on the day it is needed, so it depends on nothing that is
-not already installed.
 
 ## The mental model an operator needs
 
@@ -40,8 +38,14 @@ to one poll interval later — and acts then. So:
 ## Exit codes
 
 ``0`` the op succeeded or was a no-op; ``1`` the op was refused, or the run or config was not
-found; ``2`` a usage error (argparse's own convention). Refusals exit non-zero on purpose, so a
+found; ``2`` a usage error (Click's own convention). Refusals exit non-zero on purpose, so a
 wrapper script cannot mistake "protected, refused" for "done".
+
+## Output channels
+
+The answer goes to **stdout**; everything else — log events, error messages, refusals — goes to
+**stderr**. That is what makes ``sluice --json status | jq`` work: a ``control.finished`` log line
+on stdout would corrupt the JSON.
 
 ## Attribution
 
@@ -50,13 +54,17 @@ overridable with ``--actor``. There is no anonymous path: the audit trail is the
 did what, and an unattributed row is worthless evidence.
 """
 
-import argparse
 import contextlib
+import dataclasses
 import getpass
 import json
 import sys
 
 import structlog
+import typer
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
 
 from sluice.config import ConfigError, load_config
 from sluice.core import control
@@ -64,7 +72,7 @@ from sluice.core.daemon import assemble_registry
 from sluice.core.profile import REFERENCE_PROFILES
 from sluice.gates.profiles import PRODUCTION_PROFILES
 
-__all__ = ["build_parser", "main"]
+__all__ = ["app", "main"]
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -72,26 +80,48 @@ EXIT_REFUSED = 1
 # Shared by every state-changing subcommand. The reconcile-loop model is the one
 # thing an operator must understand, and --help is where they will look for it.
 _STATE_ONLY_EPILOG = (
-    "This changes stored state only. The daemon acts on its next look (up to one "
-    "poll interval later); nothing is executed immediately."
+    "[dim]Changes stored state only. The daemon acts on its next look "
+    "(up to one poll interval later); nothing runs immediately.[/dim]"
 )
+
+# Outcome -> colour, keyed on the EXACT vocabulary ``events.run_outcome`` returns
+# ({quarantined, completed, held, skipped, active}) — a near-miss like "complete"
+# silently falls through to the default and the colour quietly stops meaning
+# anything. Chosen so quarantined is the only red thing on a healthy screen.
+_OUTCOME_STYLES = {
+    "completed": "green",
+    "quarantined": "bold red",
+    "held": "yellow",
+    "skipped": "dim",
+    "active": "cyan",
+}
+
+# stdout carries the answer, stderr the narration. Two consoles, never crossed.
+_out = Console()
+_err = Console(stderr=True)
+
+
+@dataclasses.dataclass(frozen=True)
+class Settings:
+    """The global options, resolved once and carried on the Click context."""
+
+    config: str | None
+    actor: str
+    as_json: bool
 
 
 @contextlib.contextmanager
 def _logs_on_stderr():
-    """Route structlog output to stderr for the duration of one command, then restore.
+    """Route structlog output to stderr for one command, then restore it.
 
     The control ops emit their canonical ``control.finished`` event through
     structlog, whose default logger factory writes to **stdout**. In a daemon that
-    is fine; in a CLI it corrupts the data channel — ``sluice --json status | jq``
-    fails because a log line is interleaved with the JSON. Unix convention and
-    practical need agree: stdout is the answer, stderr is the narration.
+    is fine; in a CLI it corrupts the data channel.
 
     **Restoring matters.** ``structlog.configure`` is process-global, so a ``main()``
     that configured and walked away would silently change logging for everything
     else in the process — the daemon, another library, the rest of a test session.
-    A function callable in-process must leave global state as it found it, so the
-    previous configuration is captured and put back unconditionally.
+    A function callable in-process must leave global state as it found it.
     """
     previous_configuration = structlog.get_config().copy()
     structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sys.stderr))
@@ -106,8 +136,7 @@ def _registry():
 
     Mirrors what the daemon assembles, so ``status`` resolves exactly the profiles
     the daemon would — a status board reporting against a different registry than
-    the daemon uses would be worse than none. ``assemble_registry`` raises on a
-    duplicate key rather than letting one definition silently shadow another.
+    the daemon uses would be worse than none.
     """
     return assemble_registry(REFERENCE_PROFILES, PRODUCTION_PROFILES)
 
@@ -124,328 +153,378 @@ def _default_actor() -> str:
         return "unknown"
 
 
-def _format_run_line(entry) -> str:
-    """One status line for a run: name, experiment, outcome, lifecycle, any error.
+@contextlib.contextmanager
+def _guard():
+    """Turn every expected failure into one stderr line and exit code 1.
 
-    ``experiment_id`` sits next to the name because it is the key a human uses —
-    it is what they read in LabKey and what names the run's directory on disk.
+    Errors are handled where they happen rather than in ``main``, so Typer owns
+    the exit path and this module never depends on Click internals (Typer vendors
+    Click privately as ``typer._click``; importing that would be fragile).
+
+    Unexpected exceptions are deliberately NOT caught — a traceback for a genuine
+    bug is a report worth having, while a traceback for a missing config file is
+    just noise at an operator.
     """
-    experiment = entry.get("experiment_id")
-    experiment_label = f"exp {experiment}" if experiment is not None else "exp —"
-    parts = [
-        f"{entry['name']:<28}",
-        f"{experiment_label:<10}",
-        f"{entry.get('outcome', '?'):<12}",
-        f"{entry.get('lifecycle', '?'):<8}",
-    ]
-    if entry.get("protected"):
-        parts.append("PROTECTED")
-    line = "  ".join(parts).rstrip()
-    if entry.get("error_reason"):
-        line += f"\n    error: {entry['error_reason']}"
-    return line
+    try:
+        yield
+    except ConfigError as config_error:
+        _err.print(f"[red]sluice:[/red] {config_error}")
+        raise typer.Exit(EXIT_REFUSED) from None
+    except control.UnknownRunError as unknown_run:
+        _err.print(f"[red]sluice:[/red] {unknown_run}")
+        raise typer.Exit(EXIT_REFUSED) from None
+    except control.ControlError as refusal:
+        # A refusal is the control layer doing its job — a protected run, an
+        # active run that must be held first. Report it and exit non-zero, so a
+        # wrapper script cannot mistake a refusal for success.
+        _err.print(f"[red]sluice: refused[/red] — {refusal}")
+        raise typer.Exit(EXIT_REFUSED) from None
+    except KeyError as missing_key:
+        _err.print(f"[red]sluice:[/red] config is missing required key {missing_key}")
+        raise typer.Exit(EXIT_REFUSED) from None
 
 
-def _print_overview(status) -> None:
-    """Render the fleet overview: global flags first, then one line per run."""
-    print(f"pipeline profile : {status.get('pipeline_profile')}")
-    print(
-        "daemon paused    : "
-        f"{'YES — no run will advance' if status.get('paused') else 'no'}"
+def _settings(context: typer.Context) -> Settings:
+    """The resolved global options for this invocation."""
+    return context.obj
+
+
+def _state_file(settings: Settings) -> str:
+    """The database path from config, or a clear failure naming what is missing."""
+    return load_config(settings.config)["state_file"]
+
+
+def _emit_json(payload) -> None:
+    """Write JSON to stdout with nothing else on the channel."""
+    # Deliberately print(), not the rich console: rich would wrap and style it,
+    # and this output exists to be parsed.
+    print(json.dumps(payload, indent=2, default=str))
+
+
+app = typer.Typer(
+    name="sluice",
+    no_args_is_help=True,
+    add_completion=False,
+    rich_markup_mode="rich",
+    help=(
+        "Operator control for the [bold]sluice[/bold] sequencing pipeline.\n\n"
+        "sluice is a [italic]reconcile loop, not a queue[/italic]: these commands "
+        "change stored state and return immediately. The daemon notices on its "
+        "next look and acts then — so a command that appears to do nothing is "
+        "working correctly."
+    ),
+    epilog=(
+        "Config: [cyan]--config[/cyan], else [cyan]$SLUICE_CONFIG[/cyan], else "
+        "[cyan]./config.json[/cyan].  Full guide: [cyan]docs/OPERATING.md[/cyan]"
+    ),
+)
+
+
+@app.callback()
+def _global_options(
+    context: typer.Context,
+    config: str = typer.Option(
+        None, "--config", "-c", help="Path to config.json.", metavar="PATH"
+    ),
+    actor: str = typer.Option(
+        None, "--actor", help="Who to record in the audit trail.", metavar="NAME"
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of a table."
+    ),
+) -> None:
+    """Resolve the options every command shares."""
+    context.obj = Settings(
+        config=config, actor=actor or _default_actor(), as_json=as_json
     )
+
+
+# ---------------------------------------------------------------------------
+# Readers.
+# ---------------------------------------------------------------------------
+
+
+def _outcome_text(outcome) -> Text:
+    """The outcome, styled so the states needing a human stand out."""
+    label = str(outcome) if outcome is not None else "?"
+    return Text(label, style=_OUTCOME_STYLES.get(label, "cyan"))
+
+
+def _render_overview(status) -> None:
+    """The fleet board: global flags, a table of runs, then what to do next."""
+    paused = status.get("paused")
+    header = Table.grid(padding=(0, 2))
+    header.add_column(style="dim")
+    header.add_column()
+    header.add_row("pipeline profile", str(status.get("pipeline_profile")))
+    header.add_row(
+        "daemon",
+        Text("PAUSED — no run will advance", style="bold red")
+        if paused
+        else Text("running", style="green"),
+    )
+    _out.print(header)
+
     runs = status.get("runs", [])
-    print(f"runs             : {len(runs)}")
     if not runs:
-        print("\n(no runs detected yet)")
+        _out.print("\n[dim]No runs detected yet.[/dim]")
         return
-    print()
+
+    table = Table(box=None, pad_edge=False, header_style="bold dim")
+    table.add_column("RUN", overflow="fold")
+    table.add_column("EXPERIMENT")
+    table.add_column("OUTCOME")
+    table.add_column("LIFECYCLE")
+    table.add_column("NOTE", overflow="fold")
     for entry in runs:
-        print(_format_run_line(entry))
+        experiment = entry.get("experiment_id")
+        note = entry.get("error_reason") or ""
+        if entry.get("protected"):
+            note = f"PROTECTED  {note}".strip()
+        table.add_row(
+            entry["name"],
+            str(experiment) if experiment is not None else "—",
+            _outcome_text(entry.get("outcome")),
+            str(entry.get("lifecycle", "?")),
+            Text(note, style="red" if entry.get("error_reason") else "dim"),
+        )
+    _out.print()
+    _out.print(table)
+
     quarantined = [entry for entry in runs if entry.get("error_reason")]
     if quarantined:
-        # The one actionable summary: a quarantined run waits forever by design,
-        # so the board must say so rather than leaving it to be noticed.
-        print(
-            f"\n{len(quarantined)} run(s) quarantined and waiting for an operator. "
-            "Fix the cause, then: sluice clear-error <run>"
+        # A quarantined run waits forever by design — there is no automatic
+        # retry — so the board states it rather than leaving it to be noticed.
+        _out.print(
+            f"\n[bold red]{len(quarantined)} run(s) quarantined[/bold red] and "
+            "waiting for an operator.\nFix the cause, then: "
+            "[cyan]sluice clear-error <run>[/cyan]"
         )
 
 
-def _print_run_detail(entry) -> None:
-    """Render one run in full, including which gates are done and which are not."""
-    print(f"run            : {entry['name']}")
-    print(f"experiment id  : {entry.get('experiment_id')}")
-    print(f"outcome        : {entry.get('outcome')}")
-    print(f"lifecycle      : {entry.get('lifecycle')}")
-    print(f"pipeline       : {entry.get('pipeline_version')}")
-    print(f"detected       : {entry.get('detected_at')}")
-    print(f"completed      : {entry.get('completed_at') or '—'}")
-    print(f"protected      : {'yes' if entry.get('protected') else 'no'}")
+def _render_run_detail(entry) -> None:
+    """One run in full, including which gates are done and which are pending."""
+    detail = Table.grid(padding=(0, 2))
+    detail.add_column(style="dim", justify="right")
+    detail.add_column()
+    detail.add_row("run", Text(entry["name"], style="bold"))
+    detail.add_row("experiment id", str(entry.get("experiment_id")))
+    detail.add_row("outcome", _outcome_text(entry.get("outcome")))
+    detail.add_row("lifecycle", str(entry.get("lifecycle")))
+    detail.add_row("pipeline", str(entry.get("pipeline_version")))
+    detail.add_row("detected", str(entry.get("detected_at")))
+    detail.add_row("completed", str(entry.get("completed_at") or "—"))
+    detail.add_row("protected", "yes" if entry.get("protected") else "no")
     if entry.get("error_reason"):
-        print(f"error          : {entry['error_reason']}")
-    # Per-run anomalies are fields, not exceptions (status is total), so they have
-    # to be printed or they are invisible.
+        detail.add_row("error", Text(entry["error_reason"], style="bold red"))
+    # Per-run anomalies are fields, not exceptions (status is total), so they
+    # have to be rendered or they are invisible.
     for anomaly in ("profile_error", "exclusions_error"):
         if entry.get(anomaly):
-            print(f"{anomaly:<15}: {entry[anomaly]}")
+            detail.add_row(anomaly, Text(str(entry[anomaly]), style="red"))
     if entry.get("excluded_gates"):
-        print(f"excluded gates : {', '.join(entry['excluded_gates'])}")
+        detail.add_row("excluded gates", ", ".join(entry["excluded_gates"]))
     gates = entry.get("gates")
     if gates:
-        print(f"gates done     : {', '.join(gates.get('satisfied', [])) or '—'}")
-        print(f"gates pending  : {', '.join(gates.get('unsatisfied', [])) or '—'}")
-
-
-def _emit_result(result, as_json: bool) -> int:
-    """Print a control op's outcome and return the process exit code."""
-    if as_json:
-        print(
-            json.dumps(
-                {
-                    "action": result.action,
-                    "actor": result.actor,
-                    "run": result.target_run,
-                    "status": result.status,
-                    "message": result.message,
-                    "changes": dict(result.changes),
-                    "audit_id": result.audit_id,
-                },
-                indent=2,
-                default=str,
-            )
+        detail.add_row(
+            "gates done",
+            Text(", ".join(gates.get("satisfied", [])) or "—", style="green"),
         )
-        return EXIT_OK
-    target = f" {result.target_run}" if result.target_run else ""
-    if result.status == "noop":
-        print(f"{result.action}{target}: nothing to do ({result.message})")
+        detail.add_row(
+            "gates pending",
+            Text(", ".join(gates.get("unsatisfied", [])) or "—", style="yellow"),
+        )
+    _out.print(detail)
+
+
+@app.command()
+def status(
+    context: typer.Context,
+    run: str = typer.Option(None, "--run", "-r", help="Show just this run, in full."),
+) -> None:
+    """Show every run, and whether the daemon is paused.
+
+    The board. Lists each run with its experiment id, outcome, and any quarantine
+    reason, and calls out runs that are waiting for a human.
+    """
+    settings = _settings(context)
+    with _guard():
+        payload = control.get_status(_state_file(settings), run, registry=_registry())
+    if settings.as_json:
+        _emit_json(payload)
+        return
+    if run:
+        _render_run_detail(payload)
     else:
-        print(f"{result.action}{target}: ok")
+        _render_overview(payload)
+
+
+@app.command()
+def show(context: typer.Context, run: str = typer.Argument(..., help="Run name.")):
+    """Show one run in full, including which gates remain.
+
+    "Which gate is it stuck on?" is answered by the first entry under
+    [bold]gates pending[/bold].
+    """
+    settings = _settings(context)
+    with _guard():
+        entry = control.get_status(_state_file(settings), run, registry=_registry())
+    if settings.as_json:
+        _emit_json(entry)
+        return
+    _render_run_detail(entry)
+
+
+# ---------------------------------------------------------------------------
+# State-changing ops. Each is exactly one control op plus rendering.
+# ---------------------------------------------------------------------------
+
+
+def _render_result(result) -> None:
+    """Show a control op's outcome, including the audit row it wrote."""
+    target = f" [bold]{result.target_run}[/bold]" if result.target_run else ""
+    if result.status == "noop":
+        _out.print(
+            f"[yellow]{result.action}[/yellow]{target}: nothing to do "
+            f"([dim]{result.message}[/dim])"
+        )
+    else:
+        _out.print(f"[green]{result.action}[/green]{target}: ok")
         for column, value in result.changes.items():
-            print(f"    {column} -> {value}")
-    print(f"    audited as #{result.audit_id}")
-    return EXIT_OK
+            _out.print(f"    [dim]{column}[/dim] → {value}")
+    _out.print(f"    [dim]audited as #{result.audit_id}[/dim]")
 
 
-def _run_op(operation, args, *, needs_run: bool, **extra) -> int:
+def _call_op(settings: Settings, operation, *positional, **keyword) -> None:
     """Call one control op and render it.
 
-    The single place that knows how a control op is reached. Swapping this to an
+    The single place that knows how a control op is reached. Swapping this for an
     HTTP call is the whole of the future API migration.
     """
-    config = load_config(args.config)
-    positional = [config["state_file"], args.actor]
-    if needs_run:
-        positional.append(args.run)
-    result = operation(*positional, reason=args.reason, **extra)
-    return _emit_result(result, args.json)
-
-
-def _cmd_status(args) -> int:
-    """``sluice status`` — the fleet overview, or one run with ``--run``."""
-    config = load_config(args.config)
-    status = control.get_status(config["state_file"], args.run, registry=_registry())
-    if args.json:
-        print(json.dumps(status, indent=2, default=str))
-        return EXIT_OK
-    if args.run:
-        _print_run_detail(status)
-    else:
-        _print_overview(status)
-    return EXIT_OK
-
-
-def _cmd_show(args) -> int:
-    """``sluice show RUN`` — one run in full."""
-    config = load_config(args.config)
-    entry = control.get_status(config["state_file"], args.run, registry=_registry())
-    if args.json:
-        print(json.dumps(entry, indent=2, default=str))
-        return EXIT_OK
-    _print_run_detail(entry)
-    return EXIT_OK
-
-
-def build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser. Separate from ``main`` so tests can inspect it."""
-    parser = argparse.ArgumentParser(
-        prog="sluice",
-        description=(
-            "Operator control for the sluice sequencing pipeline. Commands change "
-            "stored state; the daemon acts on its next look."
-        ),
-        epilog=(
-            "Config is found via --config, then $SLUICE_CONFIG, then ./config.json. "
-            "Every state change is audited against --actor (default: your OS user)."
-        ),
-    )
-    parser.add_argument(
-        "--config",
-        help="path to config.json (default: $SLUICE_CONFIG, else ./config.json)",
-    )
-    parser.add_argument(
-        "--actor",
-        default=_default_actor(),
-        help="who to record in the audit trail (default: your OS user)",
-    )
-    parser.add_argument(
-        "--json", action="store_true", help="emit machine-readable JSON instead of text"
-    )
-    subcommands = parser.add_subparsers(dest="command", required=True)
-
-    status_parser = subcommands.add_parser(
-        "status",
-        help="show every run and whether the daemon is paused",
-        description=(
-            "The board. Shows the active pipeline profile, whether the daemon is "
-            "paused, and one line per run with its experiment id, outcome, and any "
-            "quarantine reason."
-        ),
-    )
-    status_parser.add_argument("--run", help="show just this run, in full")
-    status_parser.set_defaults(handler=_cmd_status)
-
-    show_parser = subcommands.add_parser(
-        "show",
-        help="show one run in full, including gate progress",
-        description=(
-            "Everything known about one run: lifecycle, quarantine reason, which "
-            "gates are satisfied, which are still pending, and which are excluded."
-        ),
-    )
-    show_parser.add_argument("run", help="the run name")
-    show_parser.set_defaults(handler=_cmd_show)
-
-    def _add_run_op(name, operation, help_text, description):
-        """Register a subcommand targeting one run, backed by one control op."""
-        subparser = subcommands.add_parser(
-            name, help=help_text, description=description, epilog=_STATE_ONLY_EPILOG
+    with _guard():
+        result = operation(
+            _state_file(settings), settings.actor, *positional, **keyword
         )
-        subparser.add_argument("run", help="the run name")
-        subparser.add_argument(
-            "--reason",
-            help="recorded in the audit trail — say why, for whoever reads it later",
+    if settings.as_json:
+        _emit_json(
+            {
+                "action": result.action,
+                "actor": result.actor,
+                "run": result.target_run,
+                "status": result.status,
+                "message": result.message,
+                "changes": dict(result.changes),
+                "audit_id": result.audit_id,
+            }
         )
-        subparser.set_defaults(
-            handler=lambda args, operation=operation: _run_op(
-                operation, args, needs_run=True
-            )
-        )
-        return subparser
+        return
+    _render_result(result)
 
-    _add_run_op(
-        "hold",
-        control.hold,
-        "stop a run from advancing",
-        (
-            "Marks the run held, so the daemon stops advancing it. An in-flight "
-            "gate finishes; the next one never starts. Reverse with 'unhold'."
-        ),
-    )
-    _add_run_op(
-        "unhold",
-        control.unhold,
-        "let a held run advance again",
-        "Returns a held run to active. The daemon resumes it on its next look.",
-    )
-    _add_run_op(
-        "unskip",
-        control.unskip,
-        "return a skipped run to active",
-        "Reverses 'skip'. The daemon resumes the run on its next look.",
-    )
-    _add_run_op(
-        "clear-error",
-        control.clear_error,
-        "forgive a quarantined run so it can retry",
-        (
-            "THE recovery command. A gate failure quarantines its run, and it stays "
-            "quarantined until you run this — there is no automatic retry, by "
-            "design. Fix the underlying cause FIRST, then clear: the daemon re-runs "
-            "the failed gate on its next look, and gates resume rather than restart "
-            "(a partly-downloaded run continues where it stopped). A run that is "
-            "also held needs 'unhold' as well — the two are independent."
-        ),
-    )
 
-    skip_parser = subcommands.add_parser(
-        "skip",
-        help="skip a run entirely",
-        description=(
-            "Marks the run skipped: the daemon will not advance it at all. For a "
-            "run that should never be processed. Reverse with 'unskip'."
-        ),
-        epilog=_STATE_ONLY_EPILOG,
-    )
-    skip_parser.add_argument("run", help="the run name")
-    skip_parser.add_argument("--reason", help="recorded in the audit trail")
-    skip_parser.add_argument(
-        "--force", action="store_true", help="skip even a protected run"
-    )
-    skip_parser.set_defaults(
-        handler=lambda args: _run_op(
-            control.skip, args, needs_run=True, force=args.force
-        )
-    )
+_RUN_ARGUMENT = typer.Argument(..., help="Run name.")
+_REASON_OPTION = typer.Option(
+    None,
+    "--reason",
+    help="Recorded in the audit trail — say why, for whoever reads it later.",
+)
 
-    for name, operation, help_text, description in (
-        (
-            "pause",
-            control.pause,
-            "stop the daemon advancing ANY run",
-            (
-                "Global stop. No run advances until 'resume'; in-flight gates "
-                "finish. Use when something is wrong fleet-wide — bad config, a "
-                "full disk, an unreachable server."
-            ),
-        ),
-        (
-            "resume",
-            control.resume,
-            "let the daemon advance runs again",
-            "Clears a global pause. Runs resume on the daemon's next look.",
-        ),
-    ):
-        global_parser = subcommands.add_parser(
-            name, help=help_text, description=description, epilog=_STATE_ONLY_EPILOG
-        )
-        global_parser.add_argument("--reason", help="recorded in the audit trail")
-        global_parser.set_defaults(
-            handler=lambda args, operation=operation: _run_op(
-                operation, args, needs_run=False
-            )
-        )
 
-    return parser
+@app.command(epilog=_STATE_ONLY_EPILOG)
+def hold(
+    context: typer.Context, run: str = _RUN_ARGUMENT, reason: str = _REASON_OPTION
+) -> None:
+    """Stop a run from advancing.
+
+    An in-flight gate finishes; the [italic]next[/italic] one never starts.
+    Reverse with [cyan]unhold[/cyan].
+    """
+    _call_op(_settings(context), control.hold, run, reason=reason)
+
+
+@app.command(epilog=_STATE_ONLY_EPILOG)
+def unhold(
+    context: typer.Context, run: str = _RUN_ARGUMENT, reason: str = _REASON_OPTION
+) -> None:
+    """Let a held run advance again."""
+    _call_op(_settings(context), control.unhold, run, reason=reason)
+
+
+@app.command(epilog=_STATE_ONLY_EPILOG)
+def skip(
+    context: typer.Context,
+    run: str = _RUN_ARGUMENT,
+    reason: str = _REASON_OPTION,
+    force: bool = typer.Option(False, "--force", help="Skip even a protected run."),
+) -> None:
+    """Skip a run entirely — the daemon will not advance it at all.
+
+    For a run that should never be processed. Reverse with [cyan]unskip[/cyan].
+    """
+    _call_op(_settings(context), control.skip, run, reason=reason, force=force)
+
+
+@app.command(epilog=_STATE_ONLY_EPILOG)
+def unskip(
+    context: typer.Context, run: str = _RUN_ARGUMENT, reason: str = _REASON_OPTION
+) -> None:
+    """Return a skipped run to active."""
+    _call_op(_settings(context), control.unskip, run, reason=reason)
+
+
+@app.command("clear-error", epilog=_STATE_ONLY_EPILOG)
+def clear_error(
+    context: typer.Context, run: str = _RUN_ARGUMENT, reason: str = _REASON_OPTION
+) -> None:
+    """Forgive a quarantined run so it can try again — [bold]the recovery command[/bold].
+
+    A gate failure quarantines its run, and it stays quarantined until you run
+    this — there is no automatic retry, by design.
+
+    [bold]Fix the underlying cause first[/bold], then clear. The daemon re-runs the
+    failed gate on its next look, and gates resume rather than restart: a
+    partly-downloaded run continues where it stopped.
+
+    A run that is also held needs [cyan]unhold[/cyan] too — the two are independent.
+    """
+    _call_op(_settings(context), control.clear_error, run, reason=reason)
+
+
+@app.command(epilog=_STATE_ONLY_EPILOG)
+def pause(context: typer.Context, reason: str = _REASON_OPTION) -> None:
+    """Stop the daemon advancing [bold]any[/bold] run.
+
+    Global stop, for when something is wrong fleet-wide — a full disk, an
+    unreachable server, bad config. In-flight gates still finish.
+    """
+    _call_op(_settings(context), control.pause, reason=reason)
+
+
+@app.command(epilog=_STATE_ONLY_EPILOG)
+def resume(context: typer.Context, reason: str = _REASON_OPTION) -> None:
+    """Let the daemon advance runs again, clearing a global pause."""
+    _call_op(_settings(context), control.resume, reason=reason)
 
 
 def main(argv=None) -> int:
-    """Entry point. Returns a process exit code; never shows an operator a traceback.
+    """Entry point. Returns a process exit code rather than exiting.
 
-    Expected failures — a refused op, an unknown run, an unreadable config, a
-    missing config key — each become one clear line on stderr and exit 1. Anything
-    else propagates, loudly and with its traceback, because an unexpected error is
-    a bug that should be reported rather than dressed up as a diagnostic.
+    Keeps ``main`` callable in-process — tests, and any future embedding — instead
+    of only as a process. Typer runs in its normal standalone mode and raises
+    ``SystemExit``; that is translated back into a return value here.
+
+    Expected failures are already handled at their source by ``_guard`` and arrive
+    as exit code 1. ``--help`` arrives as 0, a usage error as 2.
     """
-    parser = build_parser()
-    args = parser.parse_args(argv)
     try:
         with _logs_on_stderr():
-            return args.handler(args)
-    except ConfigError as config_error:
-        print(f"sluice: {config_error}", file=sys.stderr)
-        return EXIT_REFUSED
-    except control.UnknownRunError as unknown_run:
-        print(f"sluice: {unknown_run}", file=sys.stderr)
-        return EXIT_REFUSED
-    except control.ControlError as refusal:
-        # A refusal is the control layer doing its job — a protected run, an active
-        # run that must be held first. Report the reason and exit non-zero, so a
-        # wrapper script cannot mistake a refusal for success.
-        print(f"sluice: refused — {refusal}", file=sys.stderr)
-        return EXIT_REFUSED
-    except KeyError as missing_key:
-        print(f"sluice: config is missing required key {missing_key}", file=sys.stderr)
-        return EXIT_REFUSED
+            # prog_name pinned: without it the usage line reflects how the
+            # process was launched ("python -m sluice.cli"), which is not what
+            # an operator types.
+            app(args=argv, prog_name="sluice", standalone_mode=True)
+    except SystemExit as exit_request:
+        code = exit_request.code
+        return EXIT_OK if code is None else int(code)
+    return EXIT_OK
 
 
 if __name__ == "__main__":  # pragma: no cover - process entry point

@@ -103,9 +103,8 @@ def test_status_on_an_empty_deployment_says_so(deployment, capsys):
     """
     exit_code = main(["--config", str(deployment.config_path), "status"])
 
-    output = capsys.readouterr().out
+    output = capsys.readouterr().out.lower()
     assert exit_code == 0
-    assert "runs             : 0" in output
     assert "no runs detected yet" in output
 
 
@@ -122,7 +121,7 @@ def test_status_lists_runs_with_their_experiment_id(deployment, capsys):
 
     output = capsys.readouterr().out
     assert "SEQ_001" in output
-    assert "exp 4471" in output
+    assert "4471" in output
 
 
 def test_status_surfaces_quarantined_runs_with_the_next_action(deployment, capsys):
@@ -265,11 +264,12 @@ def test_pause_and_resume_toggle_the_global_flag(deployment, capsys):
 
     assert main([*config, "pause", "--reason", "disk full"]) == 0
     main([*config, "status"])
-    assert "YES — no run will advance" in capsys.readouterr().out
+    assert "PAUSED" in capsys.readouterr().out
 
     assert main([*config, "resume"]) == 0
     main([*config, "status"])
-    assert "daemon paused    : no" in capsys.readouterr().out
+    paused_output = capsys.readouterr().out
+    assert "PAUSED" not in paused_output and "running" in paused_output
 
 
 def test_help_explains_that_commands_are_state_only(capsys):
@@ -279,10 +279,13 @@ def test_help_explains_that_commands_are_state_only(capsys):
     executes anything, the daemon acts on its next look. Getting this wrong looks
     like "the command did nothing".
     """
-    with pytest.raises(SystemExit):
-        main(["hold", "--help"])
+    exit_code = main(["hold", "--help"])
 
-    assert "daemon acts on its next look" in capsys.readouterr().out
+    # Rich wraps help text, so compare on collapsed whitespace rather than
+    # depending on where the terminal width happens to break the line.
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert exit_code == 0
+    assert "daemon acts on its next look" in rendered
 
 
 def test_main_restores_global_logging_configuration(deployment):
@@ -321,3 +324,28 @@ def test_json_output_is_not_polluted_by_log_lines(deployment, capsys):
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["action"] == "hold"
+
+
+def test_every_outcome_the_system_can_report_has_a_style():
+    """The colour map covers exactly the vocabulary ``run_outcome`` produces.
+
+    A near-miss key ("complete" for "completed") falls through to a default and
+    the colour silently stops carrying meaning — which is worse than no colour,
+    because the operator has learned to trust it. This was a real bug: the first
+    version keyed on "complete" and completed runs rendered uncoloured.
+    """
+    import inspect
+
+    from sluice.cli import _OUTCOME_STYLES
+    from sluice.core import events
+
+    produced = {
+        line.split('return "')[1].split('"')[0]
+        for line in inspect.getsource(events.run_outcome).splitlines()
+        if 'return "' in line
+    }
+
+    assert produced <= set(_OUTCOME_STYLES), (
+        f"run_outcome can return {sorted(produced - set(_OUTCOME_STYLES))}, which "
+        "the CLI has no style for — those runs would render uncoloured."
+    )
