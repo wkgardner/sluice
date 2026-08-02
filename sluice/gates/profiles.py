@@ -33,7 +33,7 @@ order gate id             satisfied_column       status
 2     ``checksum``        ``checksummed``        **built** (migration 009)
 3     ``samplesheet``     ``samplesheet_created`` **built** (migration 010)
 4     ``registration``    ``authority_registered`` DISABLED by ⚑D — C3 fail-closed first
-5     ``nvd``             ``nvd_completed``      pending (migration 011)
+5     ``nvd``             ``nvd_completed``      **built** (migration 011)
 6     ``globus_submit``   ``globus_submitted``   DEFERRED (plan 15 §3a)
 7     ``globus_verify``   ``clumped_data_backed_up`` DEFERRED (plan 15 §3a)
 ===== =================== ====================== ==========================================
@@ -50,6 +50,7 @@ from sluice.core.profile import Applicability, Profile, build_profile
 from sluice.gates.checksum import CHECKSUM
 from sluice.gates.download import DOWNLOAD
 from sluice.gates.experiment import EXPERIMENT
+from sluice.gates.nvd import NVD
 from sluice.gates.samplesheet import SAMPLESHEET
 
 __all__ = ["PRODUCTION_PROFILE", "PRODUCTION_PROFILES", "PRODUCTION_VERSION"]
@@ -65,6 +66,7 @@ PRODUCTION_PROFILE: Profile = build_profile(
         (DOWNLOAD, Applicability.REQUIRED),
         (CHECKSUM, Applicability.REQUIRED),
         (SAMPLESHEET, Applicability.REQUIRED),
+        (NVD, Applicability.REQUIRED),
     ],
 )
 """The live pipeline contract, as far as it is built.
@@ -72,7 +74,9 @@ PRODUCTION_PROFILE: Profile = build_profile(
 Currently four gates: ``experiment`` (order 0) creates the run's LabKey experiment and persists
 ``experiment_id``; ``download`` (order 1) transfers the raw lanes into the experiment-keyed staging
 tree; ``checksum`` (order 2) verifies them against the delivered manifest; ``samplesheet`` (order 3)
-generates the by-lane samplesheet NVD consumes. A run reaching the end of this contract is genuinely complete under it — the daemon stamps
+generates the by-lane samplesheet NVD consumes; ``nvd`` (order 5) runs the preprocessing pipeline.
+This is the MVP target scope (plan 15 §3a) — the Globus pair is deferred, so a run completing at
+``nvd`` is complete, deliberately. A run reaching the end of this contract is genuinely complete under it — the daemon stamps
 ``completed_at`` and says so, which is correct behaviour for a partial pipeline (ADR-0004 / C4), not
 a bug to work around.
 

@@ -56,6 +56,8 @@
   "nvd_auto_run": false,
   "nvd_command": "nvd",
   "nvd_repo_dir": "<path/to/nvd_repo_checkout>",
+  "nvd_launch_base": "<path/to/LOCAL_POSIX_nvd_launch_base>",
+  "nvd_log_dir": "<path/to/nvd_log_dir>",
   "nvd_tools": "<path/to/nvd_tools>",
   "nvd_results_base": "<path/to/nvd_results_base>",
   "nvd_profile": "<nvd-profile>",
