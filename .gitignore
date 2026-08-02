@@ -45,6 +45,7 @@ logs/
 !/pixi.lock
 !/README.md
 !/HANDOFF.md
+!/CONTEXT.md
 !/config.example.json
 !/.github/workflows/*.yml
 
@@ -66,6 +67,14 @@ logs/
 #    /docs/superpowers/plans are tracked because they are the source of truth
 #    for the plans.
 !/docs/superpowers/plans/*.md
+
+#    The ADRs are tracked (added 2026-08-01, plan 14 follow-up). Commits have
+#    cited them by name since 0001 while the files existed only on one laptop.
+#    They are also load-bearing tooling: /improve-codebase-architecture reads
+#    docs/adr/ to know which decisions NOT to re-litigate, so an untracked ADR
+#    stops suppressing settled suggestions the moment a second copy exists.
+#    Contain decisions and reasoning only — no config values, no secrets.
+!/docs/adr/*.md
 
 # 8) Ruff linting
 !/ruff.toml
