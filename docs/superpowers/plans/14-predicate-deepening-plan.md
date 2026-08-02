@@ -184,14 +184,34 @@ change and syncs to the CHTC copy.
 
 ## 6. Carry-forwards (not this plan)
 
-- **The drift-hunter agent.** Will's idea, sequenced after this refactor, using it as the worked
-  example. Key design constraint already established: it must be a **periodic whole-repo sweep**,
-  not a per-increment diff review — the two copies of the eligibility rule were written seventeen
-  commits apart in different subsystems, so a diff-scoped reviewer is structurally the wrong window
-  to catch drift. It needs a standing exclusion list (the SQL/Python twin, now deliberate and
-  test-guarded; the `gates/` world-adapter shape) or it will nag about settled decisions forever.
-  Division of labour: **the agent discovers, a test enforces** — every pair it finds should end as
-  either a collapsed duplicate or a twin test, and then leave its attention permanently.
+- **The drift-hunter agent — proposed, then DROPPED 2026-08-01. Do not rebuild it.**
+  Will's idea, and a good one, but investigating it found the job already done by the
+  `/improve-codebase-architecture` skill (mattpocock plugin) — which is in fact what *produced* the
+  2026-07-31 review this plan came from. A custom agent would have duplicated a proven tool.
+
+  The one gap that seemed to justify building our own — "it needs a standing exclusion list or it
+  will nag about settled decisions forever" — **does not exist**. That skill already reads
+  `docs/adr/` as decisions not to re-litigate, and offers to record an ADR when a candidate is
+  rejected for a load-bearing reason, precisely so future sweeps stop re-suggesting it. Finding #6
+  (the `gates/` world-adapter anti-recommendation) is exactly that shape and now lives in
+  `CONTEXT.md`.
+
+  Two things follow, both since done:
+  1. **`CONTEXT.md` now exists.** The skill reads it and is instructed to use its vocabulary; the
+     project's own `.claude/agents/domain.md` already named it as the domain-doc home.
+  2. **`docs/adr/` is now tracked** (`.gitignore` §7). The "do not re-litigate" mechanism runs on
+     those files; while they were gitignored it worked only on this one laptop and would have
+     silently stopped working the moment a second copy existed.
+
+  What stays true regardless of who does the hunting: it is a **periodic whole-repo sweep**, never a
+  per-increment diff review — the two copies of the eligibility rule were written seventeen commits
+  apart in different subsystems, so a diff-scoped reviewer is structurally the wrong window. And the
+  division of labour holds: **the sweep discovers, a test enforces** — every pair it finds should end
+  as either a collapsed duplicate or a twin test, and then leave its attention permanently.
+
+  Note the skill is marked `disable-model-invocation: true`, so it cannot be auto-invoked and is not
+  something to wire into the build loop — Will runs it, and it ends in a grilling loop that needs
+  him. Cadence: after a subsystem lands, or every few increments.
 - Review findings #3, #4, #5 — each its own pass.
 - Finding #6 → a `CONTEXT.md` entry, not code.
 - Plan B increment 4 (the download gate) resumes after this.

@@ -590,9 +590,10 @@ release candidate pending Plan B production gates.**
   (implementer/test-author/code-reviewer/docs-builder now enforce ADR-0001), and the
   `docs/dev-cycle/` artifacts (`01-db/` through `07-audit/` — **no `08-control/` artifacts:
   visual docs are optional in the lightweight mode**) are all still behind the deny-all
-  allowlist `.gitignore` — the human curates the allowlist. **Standing open item:** no allowlist
-  rule for `docs/adr/` yet, so ADR-0001/0002/0003/0004/0005 exist only in this working copy
-  while code commits cite them by name.
+  allowlist `.gitignore` — the human curates the allowlist. ~~**Standing open item:** no allowlist
+  rule for `docs/adr/` yet~~ → **CLOSED 2026-08-01 (§10 entry 3o): `!/docs/adr/*.md` and
+  `!/CONTEXT.md` added; all six ADRs are now tracked and in history.** `notes/`, `specs/`, and
+  `docs/dev-cycle/` remain untracked by design.
 - `pixi.toml` (name `sluice`, `platforms = ["linux-64", "osx-arm64"]`, deps: python 3.14 / pytest 9 /
   structlog) + `pixi.lock` (solved with pixi 0.72.1).
 - `config.example.json` — ~69 keys (now incl. `watch_dir`; `folder_events_dir` renamed
@@ -927,16 +928,34 @@ actually protected.
    clause, not the AND of two; review finding #3 (five inline `_conclude` twins in the 1,745-line
    `control.py`); findings #4/#5; finding #6 is an **anti-recommendation** — do NOT extract a
    `gates/` base class, it would be a shallow pass-through; document it in `CONTEXT.md` instead.
-   **Next: the drift-hunter agent** (plan 14 §6) — Will's idea, sequenced deliberately after this
-   refactor so it has a worked example. Design constraint already established: it must be a
-   **periodic whole-repo sweep, not a per-increment diff review**, because the two copies of the
-   eligibility rule were written seventeen commits apart in different subsystems — a diff-scoped
-   reviewer is structurally the wrong window. Needs a standing exclusion list (this SQL/Python
-   twin, now deliberate and test-guarded; the `gates/` world-adapter shape) or it will nag about
-   settled decisions forever. Division of labour: **the agent discovers, a test enforces.**
-   Then the `download` gate (Plan B increment 4, migration 008) resumes as before.
-   Standing items unchanged: `docs/adr/` holds SIX gitignored ADRs (0001–0006); `notes/` and
-   `specs/` untracked; `docs/dev-cycle/` untracked; no git remote; CHTC drift since 2026-07-17
+3o. ✅ **Drift-hunter agent DROPPED; `CONTEXT.md` created; ADRs finally tracked** 2026-08-01.
+   The proposed custom drift-hunter agent was investigated and **cancelled — do not rebuild it**
+   (reasoning preserved in plan 14 §6). The job is already done by the
+   **`/improve-codebase-architecture`** skill (mattpocock plugin), which is in fact what *produced*
+   the 2026-07-31 review that findings #1/#2 came from — a custom agent would have duplicated a
+   tool already proven on this codebase. The gap that seemed to justify building one ("it needs a
+   standing exclusion list or it will nag forever") **does not exist**: the skill already reads
+   `docs/adr/` as decisions not to re-litigate, and offers to record an ADR when a candidate is
+   rejected for a load-bearing reason. It is `disable-model-invocation: true`, so it cannot be
+   wired into the build loop — Will runs it, periodically, after a subsystem lands.
+   Two gaps closed instead:
+   - **`CONTEXT.md` now exists at the repo root** — the domain glossary `.claude/agents/domain.md`
+     always named but nothing had created. Defines run, experiment ID, gate, gate outcome,
+     satisfaction column, profile, contract, exclusion, the two orthogonal state axes (lifecycle
+     vs quarantine), **daemon-eligible**, reconcile loop, control op, run context,
+     quarantine-grade, world adapter, seam, and **twin** — each with the synonyms to avoid and
+     why. Finding #6's anti-recommendation (do NOT extract a `gates/` base class) is recorded
+     there on purpose, so it stops being re-proposed.
+   - **⛔→✅ THE LONG-STANDING 3a ITEM IS CLOSED.** `.gitignore` now allowlists
+     `!/docs/adr/*.md` and `!/CONTEXT.md`. All **six** ADRs (0001–0006) enter history in this
+     commit, after a clean secret/production-value scan. Commits have cited them by name since
+     0001 while the files lived on one laptop only; they are also load-bearing tooling, since the
+     architecture skill's do-not-re-litigate mechanism reads them.
+   **Next: the `download` gate** (Plan B increment 4, gate map §8 step 5 — multi-TB rsync, migration
+   008, errata D6 threadpool-contextvar, and deferred ⚑A where `resolve_context.workdir` becomes
+   experiment_id-aware). Resumes as before.
+   Standing items: `notes/`, `specs/`, `docs/dev-cycle/` still untracked; **no git remote — now the
+   single largest project risk, with ~44 commits on one laptop**; CHTC drift since 2026-07-17
    (§2/§3) unresolved.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
