@@ -206,3 +206,38 @@ the gate. Distinguishing them costs nothing today and is the input any rewind po
 
 **Not decided:** whether to reopen ADR-0002 at all. Revisit after the pipeline has run real samples
 and there is evidence about how often checksum failures are transient.
+
+---
+
+## 9. Recorded deviation: the CLI talks to `control` directly, not through an API
+
+`sluice/cli/__init__.py`'s original docstring specified an HTTP client to `sluice.api`, because
+"the api is the authorized control-write path". Increment 4 ships the CLI talking to
+`sluice.core.control` **directly**. This is a deliberate deviation, not an oversight.
+
+**The property that motivated the rule is preserved.** Auditing lives in `control` — every
+state-changing op writes its `control_audit` row inside its own transaction — not in the API. Going
+direct keeps every write attributed and audited exactly as before. What the API adds is **remote**
+access, not authorization.
+
+**Remote access is not the first need.** The API means FastAPI, a lockfile change, a service to
+supervise, and a port to secure — all before anyone can unstick a single run. An operator on the
+host the daemon runs on needs none of that, and the deadline does not accommodate it.
+
+**The migration path is kept narrow.** Only `_run_op` and the two `_cmd_*` readers know how a
+control op is reached; swapping them for HTTP calls is the whole of the future change. Nothing else
+in the CLI knows.
+
+Not an ADR: no ADR ever specified the CLI's transport, so nothing is being overridden. If the API
+lands later this note explains why the CLI predates it.
+
+### A bug this increment surfaced, worth remembering
+
+`structlog.configure` is **process-global**. The CLI routes logs to stderr so `--json` output stays
+parseable (a `control.finished` event on stdout makes `sluice --json status | jq` fail), and the
+first version configured it and walked away — silently changing logging for everything else in the
+process. It broke 42 unrelated tests that happened to run afterwards.
+
+The fix is a context manager that restores the previous configuration unconditionally, and the
+invariant is now pinned by `test_main_restores_global_logging_configuration`. The general rule: a
+function that anything can call in-process must leave global state as it found it.
