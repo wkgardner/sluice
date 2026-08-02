@@ -9,6 +9,7 @@ version = "0.1.0"
 test = "python -m pytest tests/ -v"
 lint = "ruff check sluice/ tests/ && ruff format --check sluice/ tests/"
 format = "ruff format sluice/ tests/"
+sluice = "python -m sluice.cli"
 
 # Core deps only at bootstrap. slack-sdk, labkey, typer, rich, and fastapi
 # arrive with the plans that need them (B and C).
