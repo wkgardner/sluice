@@ -449,20 +449,62 @@ def test_validate_gates_rejects_persisting_into_own_satisfied_column():
 
 
 def test_gate_exports_exactly_the_documented_surface():
-    """``gate.__all__`` is exactly the four documented names (plan 02 unit 4).
+    """``gate.__all__`` is exactly the five documented names (plan 02 unit 4).
 
     The scope guard, db unit-7 precedent: equality — not subset — so the public
     surface cannot silently grow (a helper leaking into the contract becomes an
     API someone depends on) or shrink (dropping a name breaks every downstream
     ``from sluice.core.gate import ...``). Widening this set is a conscious
     plan revision, made visible by editing this test.
+
+    Grew to five when ``no_op_invalidate`` was hoisted out of four gate modules
+    that had each written the same "nothing to undo" function.
     """
     assert set(sluice.core.gate.__all__) == {
         "Gate",
         "GateResult",
         "GateOutcome",
+        "no_op_invalidate",
         "validate_gates",
     }
+
+
+def test_no_op_invalidate_returns_none_for_any_context():
+    """The shared no-op accepts whatever it is handed and does nothing with it.
+
+    ``invalidate`` is a dormant hook — ADR-0005 d.3 means nothing in the daemon
+    ever calls it — so the only contract that matters is that it is callable
+    with a context and returns ``None``. It must not inspect the context: a
+    no-op that reached for ``context.workdir`` would raise for a gate whose
+    context has none, turning a deliberate nothing into a crash.
+    """
+    assert sluice.core.gate.no_op_invalidate(object()) is None
+    assert sluice.core.gate.no_op_invalidate(None) is None
+
+
+def test_the_four_produce_nothing_gates_share_one_no_op_invalidate():
+    """download/checksum/samplesheet/nvd point at the *same* function object.
+
+    This is the deduplication itself, asserted rather than assumed: each of
+    these modules previously defined its own ``_invalidate_X`` whose body was
+    ``return None``. Identity — not merely "returns None" — is what fails if
+    someone reintroduces a per-gate copy.
+
+    ``experiment`` is deliberately excluded and keeps its own: its no-op is
+    load-bearing (it must never clear ``experiment_id``, which would orphan a
+    real LabKey experiment), and that reasoning belongs in a function of its
+    own where it cannot be mistaken for boilerplate.
+    """
+    from sluice.core.gate import no_op_invalidate
+    from sluice.gates.checksum import CHECKSUM
+    from sluice.gates.download import DOWNLOAD
+    from sluice.gates.experiment import EXPERIMENT
+    from sluice.gates.nvd import NVD
+    from sluice.gates.samplesheet import SAMPLESHEET
+
+    for gate in (DOWNLOAD, CHECKSUM, SAMPLESHEET, NVD):
+        assert gate.invalidate is no_op_invalidate, gate.id
+    assert EXPERIMENT.invalidate is not no_op_invalidate
 
 
 def test_gate_rejects_a_self_need():

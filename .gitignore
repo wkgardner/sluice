@@ -76,6 +76,18 @@ logs/
 #    Contain decisions and reasoning only — no config values, no secrets.
 !/docs/adr/*.md
 
+#    Operator- and contributor-facing docs at the /docs ROOT (added 2026-08-02).
+#    A glob rather than one line per file, deliberately: docs/OPERATING.md was
+#    written on 2026-08-02 for the colleague who will run sluice unattended, the
+#    commit that "added" it (3d47304) recorded it as landed, and the deny-all
+#    rule silently swallowed it — the single most handover-critical document in
+#    the repo existed on one laptop for a day without anyone noticing. Non-
+#    recursive on purpose: docs/superpowers/, docs/dev-cycle/, docs/teachme/ and
+#    docs/agents/ stay untracked, so this admits only the small set of top-level
+#    guides. Anything placed here is operator-readable by definition — no config
+#    values, no secrets, same standard as the ADRs.
+!/docs/*.md
+
 # 8) Ruff linting
 !/ruff.toml
 

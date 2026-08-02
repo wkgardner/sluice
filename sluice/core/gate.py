@@ -17,6 +17,7 @@ __all__ = [
     "Gate",
     "GateOutcome",
     "GateResult",
+    "no_op_invalidate",
     "validate_gates",
 ]
 
@@ -144,6 +145,35 @@ class Gate:
                 f"gate {self.id!r} lists itself in needs — a self-need can "
                 f"never be satisfied (plan 02 unit 3: reconcile deadlock)"
             )
+
+
+def no_op_invalidate(context: Any) -> None:  # noqa: ARG001 — the signature is the contract
+    """The shared ``invalidate`` for any gate with nothing to safely undo.
+
+    ``invalidate``'s job is to reverse what ``produces`` names, but under
+    ADR-0005 sluice never deletes a file automatically — destructive filesystem
+    actions stay in operators' hands, and d.3 keeps the hook dormant (the daemon
+    never calls it). Two different gates therefore land on the same behaviour:
+    one that produced nothing has nothing to undo, and one that produced a
+    multi-TB transfer or an hours-long results tree is *forbidden* to undo it.
+    Both pass this.
+
+    Pass it directly — ``invalidate=no_op_invalidate`` — and record the
+    gate-specific reason in a comment on that line. Four gate modules each wrote
+    their own ``_invalidate_X`` returning ``None``, which read as four
+    independent decisions rather than one policy applied four times.
+
+    **Not for a gate whose no-op is load-bearing.** ``experiment`` keeps its own,
+    because there the point is not "nothing to undo" but "undoing this would
+    orphan a real LabKey experiment" — a reason that must not be mistaken for
+    boilerplate. If your gate's comment would say anything other than "nothing to
+    undo" or "ADR-0005 forbids the undo", write the function.
+
+    Takes a context and ignores it: the argument exists to satisfy the
+    ``Callable[[Any], None]`` field, and reaching into it would make a
+    deliberate nothing able to raise.
+    """
+    return None
 
 
 def validate_gates(gates: Iterable[Gate]) -> tuple[Gate, ...]:

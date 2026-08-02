@@ -26,7 +26,7 @@ import functools
 import pathlib
 from typing import Any
 
-from sluice.core.gate import Gate, GateOutcome, GateResult
+from sluice.core.gate import Gate, GateOutcome, GateResult, no_op_invalidate
 from sluice.gates.download import RAW_SEQS_DIRNAME
 from sluice.gates.nvd_tool import NvdToolError, make_nvd_client
 
@@ -84,17 +84,6 @@ def _run_samplesheet(context: Any) -> GateResult:
     )
 
 
-def _invalidate_samplesheet(context: Any) -> None:
-    """A deliberate NO-OP (ADR-0005): sluice never deletes a generated file.
-
-    ``produces`` names ``samplesheet.csv``, and the honest undo would be removing
-    it. ADR-0005 keeps destructive filesystem actions in operators' hands, and
-    ``invalidate`` is never invoked automatically (d.3). Re-running the gate is
-    safe regardless — ``--force`` overwrites.
-    """
-    return None
-
-
 SAMPLESHEET = Gate(
     id="samplesheet",
     name="Generate by-lane samplesheet",
@@ -103,7 +92,9 @@ SAMPLESHEET = Gate(
     needs=("checksum",),  # never build a samplesheet from unverified lanes
     produces=(SAMPLESHEET_FILENAME,),
     run=_run_samplesheet,
-    invalidate=_invalidate_samplesheet,
+    # ADR-0005: removing the generated ``samplesheet.csv`` would be the honest
+    # undo, and sluice never deletes automatically. Re-running overwrites.
+    invalidate=no_op_invalidate,
     terminate=None,
     persists={},  # the file on disk is the artifact — no token worth a column
 )

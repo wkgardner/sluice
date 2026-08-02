@@ -30,7 +30,7 @@ from typing import Any
 
 import structlog
 
-from sluice.core.gate import Gate, GateOutcome, GateResult
+from sluice.core.gate import Gate, GateOutcome, GateResult, no_op_invalidate
 from sluice.gates.download import RAW_SEQS_DIRNAME
 
 __all__ = [
@@ -215,16 +215,6 @@ def run_checksum_gate(context: Any) -> GateResult:
     return GateResult(GateOutcome.SUCCESS, metadata={"verified_files": len(expected)})
 
 
-def _invalidate_checksum(context: Any) -> None:
-    """A deliberate NO-OP: verification produces nothing on disk to undo.
-
-    The gate only reads. There is no artifact to remove, and ADR-0005 forbids
-    automatic deletion regardless. Clearing the ``checksummed`` column — which the
-    operator's ``reset_gate`` does — is the entire rewind.
-    """
-    return None
-
-
 CHECKSUM = Gate(
     id="checksum",
     name="Verify checksums",
@@ -233,7 +223,10 @@ CHECKSUM = Gate(
     needs=("download",),  # nothing to verify until the lanes are present
     produces=(),  # read-only: verification writes nothing
     run=run_checksum_gate,
-    invalidate=_invalidate_checksum,
+    # Verification only reads: there is no artifact to undo. Clearing the
+    # ``checksummed`` column — what the operator's ``reset_gate`` does — is the
+    # entire rewind.
+    invalidate=no_op_invalidate,
     terminate=None,
     persists={},  # intactness is re-derivable — no token worth a column
 )
