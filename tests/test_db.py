@@ -1125,9 +1125,8 @@ def test_all_migrations_yield_the_top_version_and_every_object(tmp_path):
 # ``PRODUCTION_GATE_COLUMNS`` above.
 #
 # Shipped so far: ``labkey_registered`` (007, experiment gate), ``downloaded``
-# (008, download gate).
+# (008, download gate), ``checksummed`` (009, checksum gate).
 UNSHIPPED_PRODUCTION_SATISFACTION_COLUMNS = {
-    "checksummed",
     "samplesheet_created",
     "authority_registered",
     "nvd_completed",
@@ -2189,12 +2188,12 @@ def test_migration_008_adds_downloaded_not_null_default_zero(tmp_path):
     assert column["dflt_value"] == "0"
 
 
-def test_migration_ladder_head_is_008(tmp_path):
-    """The ladder reaches 008 and records it.
+def test_migration_ladder_head_is_009(tmp_path):
+    """The ladder reaches 009 and records it.
 
     Pins that the download gate's migration is actually wired into MIGRATIONS
     rather than merely defined — a gate whose column never lands would raise
     KeyError in reconcile on every look.
     """
     with initialized_connection(tmp_path / "state.db") as connection:
-        assert sluice.core.db.schema_version(connection) == 8
+        assert sluice.core.db.schema_version(connection) == 9

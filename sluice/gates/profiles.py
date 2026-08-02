@@ -30,7 +30,7 @@ order gate id             satisfied_column       status
 ===== =================== ====================== ==========================================
 0     ``experiment``      ``labkey_registered``  **built** (migration 007)
 1     ``download``        ``downloaded``         **built** (migration 008)
-2     ``checksum``        ``checksummed``        pending (migration 009)
+2     ``checksum``        ``checksummed``        **built** (migration 009)
 3     ``samplesheet``     ``samplesheet_created`` pending (migration 010)
 4     ``registration``    ``authority_registered`` DISABLED by ⚑D — C3 fail-closed first
 5     ``nvd``             ``nvd_completed``      pending (migration 011)
@@ -47,6 +47,7 @@ import types
 from collections.abc import Mapping
 
 from sluice.core.profile import Applicability, Profile, build_profile
+from sluice.gates.checksum import CHECKSUM
 from sluice.gates.download import DOWNLOAD
 from sluice.gates.experiment import EXPERIMENT
 
@@ -61,13 +62,14 @@ PRODUCTION_PROFILE: Profile = build_profile(
     [
         (EXPERIMENT, Applicability.REQUIRED),
         (DOWNLOAD, Applicability.REQUIRED),
+        (CHECKSUM, Applicability.REQUIRED),
     ],
 )
 """The live pipeline contract, as far as it is built.
 
-Currently two gates: ``experiment`` (order 0) creates the run's LabKey experiment and persists
+Currently three gates: ``experiment`` (order 0) creates the run's LabKey experiment and persists
 ``experiment_id``; ``download`` (order 1) transfers the raw lanes into the experiment-keyed staging
-tree. A run reaching the end of this contract is genuinely complete under it — the daemon stamps
+tree; ``checksum`` (order 2) verifies them against the delivered manifest. A run reaching the end of this contract is genuinely complete under it — the daemon stamps
 ``completed_at`` and says so, which is correct behaviour for a partial pipeline (ADR-0004 / C4), not
 a bug to work around.
 
