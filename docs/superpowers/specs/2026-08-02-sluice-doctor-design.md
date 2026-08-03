@@ -1,6 +1,6 @@
 # `sluice doctor` — design
 
-**Date:** 2026-08-02
+**Date:** 2026-08-02 (amended 2026-08-03 — §8a, §11)
 **Status:** approved (brainstormed and grilled with Will, 2026-08-02)
 **Resolves:** errata **E2** (ambient, unhealth-checked credentials)
 **Depends on:** plan 15 increment 8 (`sluice setup` + the config schema)
@@ -177,6 +177,41 @@ real source path; a **read-only** LabKey probe (`find_experiment_by_run_name` wi
 sentinel that will not exist — never `create_experiment`); `nvd --version` executing;
 Slack `auth.test`.
 
+Plus the **source manifest visibility report** (§8a), which reuses the listing the
+rsync probe already fetches.
+
+### 8a. Source manifest visibility (increment B)
+
+Doctor reports, from the listing it already has:
+
+```
+source: 7 run directories visible, 6 with a recognisable manifest
+        1 skipped: 240815_A01234_0123_XYZ
+```
+
+A directory present at the source but carrying no recognisable manifest is a **WARN**,
+naming the directory.
+
+**Why this check exists.** Detection filters a folder out unless it has both a
+`001.fastq.gz` and a manifest. The rsync `--include` filters that build the listing are
+**case-sensitive** — `*md5s.txt` and `*.sha256` (`detection.py:143-144`, `163-164`;
+python-poller `poller.py:197-198`, `211-212`) — so the lowercasing at
+`detection.py:88` never gets the chance to help: a manifest named `MD5S.TXT`,
+`.SHA256`, or anything not ending in those two strings is never listed, the folder
+looks manifest-less, and **the run is filtered out of detection entirely**. No error,
+no quarantine, no notification — the run simply never appears.
+
+python-poller has behaved this way for its whole life, so sluice's port is faithful
+rather than regressed; the trap is inherited, not introduced. It matters now because
+the sequencing core **has already changed its delivery format once**, from MD5 to
+SHA-256. The next variation lands while nobody is watching, and the symptom is runs
+quietly not being picked up — the hardest failure for an operator to diagnose, because
+nothing is wrong anywhere they would think to look.
+
+This check does not fix the trap; it makes it **visible**, which is the appropriate
+scope for a diagnostic. Widening the include filters is a detection change, out of
+scope here — see §11.
+
 **C — the startup gate.**
 The check in the CLI `daemon` command before `run_forever`; the hidden bypass flag;
 a WARN logged on every cycle while running bypassed, so a permanently-bypassed daemon
@@ -221,6 +256,15 @@ doctor checks land with them — the drift guard will insist.
   the suite fails, in the manner of `tests/test_predicate_twins.py`.
 
 ## 11. Open items
+
+- **Should detection's manifest matching be widened?** §8a makes the silent-skip trap
+  visible but deliberately does not fix it. The fix would be case-insensitive
+  `--include` filters (`*[mM][dD]5s.txt` style, or `--ignore-case` where rsync supports
+  it) so an uppercase manifest is listed and the existing lowercasing at
+  `detection.py:88` becomes reachable. That is a **detection** change affecting which
+  runs enter the system at all, so it wants its own increment, its own test, and a
+  deliberate decision — not a side effect of building a diagnostic. Raised by the
+  comparison against python-poller during this design; not scheduled.
 
 - `docs/superpowers/specs/` is untracked in git; this spec is allowlisted **by name**
   rather than by glob, because the errata and design-of-record in that directory may
