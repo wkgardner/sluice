@@ -966,10 +966,10 @@ actually protected.
    had to be the thing that slips, never the thing whose slippage makes the rest unusable.
    **`production-v3.1` now runs `experiment → download → checksum → samplesheet → nvd`.**
    Migration ladder **007 → 011**. 493 → **654 tests green**; lint clean; both guards green.
-   - **1. `production-v3.1` profile** (`7f16dd8`) — the blocker invisible in the gate map: the
+   - **1. `production-v3.1` profile** (`487c6e2`) — the blocker invisible in the gate map: the
      profile was specified but **never defined anywhere in `sluice/`**. Going live would have
      quarantined every run on `UnknownProfileError` at the daemon's first look, continuously.
-   - **2. ⚑A + download gate** (`ea9c5bc`, `1756199`, migration 008) — `resolve_context` keys
+   - **2. ⚑A + download gate** (`85e4fb8`, `d0a34e9`, migration 008) — `resolve_context` keys
      staging on `experiment_id` with a name-keyed fallback while it is NULL. rsync adapter is
      fail-closed; the password is never logged, returned, or put in an exception (two tests pin
      the leak surface). D1 disk pre-flight fails OPEN on unreadable xattrs but refuses a full
@@ -978,39 +978,39 @@ actually protected.
      (`download_with_retry`, PP `:561`), which matters because ADR-0002 quarantines on any
      failure and a transient connection block would otherwise strand a healthy run. D6 closed
      structurally: workers do pure I/O, all logging on the submitting thread.
-   - **3. `checksum` gate** (`bbe51ec`, migration 009) — failure modes reported **distinctly**
+   - **3. `checksum` gate** (`08d5e41`, migration 009) — failure modes reported **distinctly**
      (`MANIFEST_MISSING` vs `HASH_MISMATCH`) at Will's prompting, so the deferred auto-rewind
      question (plan 15 §8) stays makeable. Manifest discovery **walks** rather than globs (SHA-256
      manifests are dotfiles, `glob("*")` skips them); only `001.fastq.gz` entries are verified.
-   - **4. CLI** (`3d47304`, rebuilt on Typer+rich in `bcabedf`) + config loader + **`docs/
+   - **4. CLI** (`564bf5b`, rebuilt on Typer+rich in `93eb020`) + config loader + **`docs/
      OPERATING.md`**, a standalone operator guide assuming no knowledge of the codebase. Two
      recorded deviations (plan 15 §9): stdlib-then-Typer, and the CLI talks to `control`
      **directly** rather than through `sluice.api` — auditing lives in control, so what the API
      adds is *remote* access, not authorization. A real bug caught: `structlog.configure` is
      process-global and the first version never restored it, breaking 42 unrelated tests.
-   - **5. Slack notifier** (`47ad1b3`) — and **the A5 seam completed**. `runs.slack_thread_ts` has
+   - **5. Slack notifier** (`c1cb762`) — and **the A5 seam completed**. `runs.slack_thread_ts` has
      existed since migration 001 and `safe_notify`'s docstring describes the thread id riding back
      to the daemon, but **nothing ever acted on it**: `detect_new_runs` discarded the return, so
      every notification would have posted un-threaded. The daemon now persists it, in its own
      transaction outside the detection one. Token from `slack_bot_token_file`/`$SLACK_BOT_TOKEN`,
      **never honoured inline from config** (tested).
-   - **6. `samplesheet` gate** (`f865249`, migration 010) + shared NVD tool adapter. `needs=
+   - **6. `samplesheet` gate** (`b2a4385`, migration 010) + shared NVD tool adapter. `needs=
      ("checksum",)` not `("download",)` — "verified before used" made structural. **Errata A7/D2
      fixed in passing:** production derives the NVD path from `Path.home()`; sluice reads
      `nvd_repo_dir` by subscript. Deviation (plan 15 §10): does **not** port `git checkout -f`.
-   - **7. `nvd` gate** (`bbad5c1`, migration 011) — D2/A7 launch dir **refused** if inside
+   - **7. `nvd` gate** (`a41ae03`, migration 011) — D2/A7 launch dir **refused** if inside
      `local_staging_dir` (on shared storage `--resume` silently does nothing); D3 append-mode
      logs; D5 heartbeats; ⚑F no time bound. **`nvd_auto_run` is deliberately NOT honoured** — it
      is the exact ADR-0004 shape (a gate reporting satisfied without doing its work); DISABLE the
      gate instead. Migration 011 records production's `pipeline_started`+`pipeline_completed`
      collapsing onto one `nvd_completed`.
-   - **8. `sluice setup` + config schema** (`e02e08d`) — Will's request: one command that
+   - **8. `sluice setup` + config schema** (`bfed2c4`) — Will's request: one command that
      initialises AND upgrades, config under `~/.sluice`. **An existing value is never
      overwritten**, which is what makes an upgrade safe to run without reading a diff. The schema
      is guarded by an `ast` parse asserting it covers exactly the keys the code reads, in both
      directions — that guard immediately caught `config.example.json` carrying **34 dead keys**
      (77 → 44).
-   - **⚠️ THREE INTEGRATION BUGS found by the first real end-to-end run** (`3696c94`), against
+   - **⚠️ THREE INTEGRATION BUGS found by the first real end-to-end run** (`6cffb69`), against
      Will's local fixture. None was catchable by unit tests: (a) the listing command **lost its
      trailing slash**, so `rsync --list-only` described the directory instead of listing it and
      every run reported "listed zero files" — the unit test fed the parser a canned listing;
@@ -1062,7 +1062,7 @@ actually protected.
    - 654 → **656 tests green**; lint clean; both guards green. Exactly ONE existing test edited
      (the `gate.__all__` surface guard) — the plan-14 stop condition never fired.
    **⚠️ FOUND WHILE COMMITTING: `docs/OPERATING.md` WAS NEVER IN GIT.** The deny-all `.gitignore`
-   silently swallowed it; commit `3d47304` recorded it as landed and §3p above repeats the claim.
+   silently swallowed it; commit `564bf5b` recorded it as landed and §3p above repeats the claim.
    The single most handover-critical document in the repo — the operator guide written for the
    colleague who runs sluice unattended — existed on ONE laptop for a day. Fixed here with
    `!/docs/*.md` (non-recursive, so `superpowers/`, `dev-cycle/`, `teachme/`, `agents/` stay
