@@ -41,7 +41,7 @@ with nobody around who knows the system.
 | D4 | **A hidden bypass flag exists**, absent from `--help` and **not named in the failure message**. | Preflight code is new; a false positive that bricks the pipeline for a week is worse than the bleed it prevents. Hiding it keeps it a deliberate act rather than the obvious next keystroke, so it cannot silently become the default in a systemd unit. |
 | D5 | **Verifiability is classified in the config schema** via a new `ProbeKind` on `ConfigField`, **with no default**. | See §5. No default is what delivers the no-decoupling property: a defaulted field forgets by construction. |
 | D6 | **Severity is derived from `FieldKind`, never hand-assigned.** | `MANAGED_PATH` missing → WARN (setup creates those; sluice can recreate). `EXTERNAL_PATH` / `SECRET_FILE` missing → FAIL (only a human can supply it). Derived rules cannot drift the way a hand-maintained severity column would. |
-| D7 | **Comprehensive probes reuse the real adapters** — `make_transfer_client`, `make_experiment_client`, `make_nvd_client`, the Slack notifier. | A doctor pass then proves *the gate* will work rather than proving a parallel reimplementation works. This is the property that would have caught the trailing-slash bug in `3696c94`. |
+| D7 | **Comprehensive probes reuse the real adapters** — `make_transfer_client`, `make_experiment_client`, `make_nvd_client`, the Slack notifier. | A doctor pass then proves *the gate* will work rather than proving a parallel reimplementation works. This is the property that would have caught the trailing-slash bug in `6cffb69`. |
 | D8 | **Ship as three increments, A → B → C** (§8). | Each leaves a shippable system (the plan 15 §3a principle). If one slips it must be C. |
 
 ## 4. Architecture
