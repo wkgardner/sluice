@@ -43,6 +43,7 @@ logs/
 !/.gitignore
 !/pixi.toml
 !/pixi.lock
+!/install.sh
 !/README.md
 !/HANDOFF.md
 !/CONTEXT.md
