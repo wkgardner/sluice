@@ -650,3 +650,27 @@ def test_yes_rewrites_and_keeps_a_backup_of_what_was_there(tmp_path, capsys):
     assert backup.read_bytes() == before, "the backup is not the pre-write file"
     # And the hand-set value survived the rewrite, as it always must.
     assert json.loads(config_path.read_text())["remote_host"] == "seq.example.edu"
+
+
+def test_doctor_puts_failures_at_the_bottom(deployment, capsys):
+    """Failures finish the table, next to the summary the operator reads.
+
+    A full config runs to forty-odd rows. In run order the failures scatter
+    through them and scroll off the top, leaving the reader to hunt upward for
+    the only rows they have to act on.
+    """
+    main(["--config", str(deployment.config_path), "doctor"])
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if "│" in line]
+    severity_rows = [
+        line for line in lines if any(s in line for s in ("ok", "warn", "FAIL", "skip"))
+    ]
+    last_ok = max(
+        (i for i, line in enumerate(severity_rows) if " ok " in line), default=-1
+    )
+    first_fail = min(
+        (i for i, line in enumerate(severity_rows) if "FAIL" in line),
+        default=len(severity_rows),
+    )
+
+    assert first_fail > last_ok, "a passing check was rendered below a failure"
