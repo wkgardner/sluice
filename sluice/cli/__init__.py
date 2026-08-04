@@ -66,11 +66,12 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from sluice.config import ConfigError, load_config
+from sluice.config import ConfigError, load_config, resolve_config_path
 from sluice.config.setup import apply_plan, plan_setup
 from sluice.core import control
 from sluice.core.daemon import assemble_registry, run_forever
 from sluice.core.profile import REFERENCE_PROFILES
+from sluice.doctor import Severity, run_doctor, worst
 from sluice.gates.detection import list_remote_runs
 from sluice.gates.profiles import PRODUCTION_PROFILES, PRODUCTION_VERSION
 from sluice.gates.slack import make_notifier
@@ -305,6 +306,49 @@ def _render_overview(status) -> None:
         )
 
 
+_DOCTOR_STYLES = {
+    Severity.OK: ("[green]ok[/green]", "green"),
+    Severity.WARN: ("[yellow]warn[/yellow]", "yellow"),
+    Severity.FAIL: ("[red]FAIL[/red]", "red"),
+    Severity.SKIP: ("[dim]skip[/dim]", "dim"),
+}
+
+
+def _render_doctor(results, config_path) -> None:
+    """One row per check, in the order they ran, then a one-line summary.
+
+    The config path is printed above the table because "doctor still says X
+    after I fixed X" is almost always a second config file, and nothing else in
+    the output says which one was read.
+
+    Skipped checks are shown rather than hidden: "not used in this source mode"
+    is information an operator wants when they are wondering why doctor said
+    nothing about the host they just configured.
+    """
+    _out.print(f"[dim]config:[/dim] {config_path}")
+    table = Table(title="sluice doctor", show_lines=False)
+    table.add_column("")
+    table.add_column("area", style="cyan")
+    table.add_column("check")
+    table.add_column("detail", overflow="fold")
+    for result in results:
+        marker, _style = _DOCTOR_STYLES[result.severity]
+        table.add_row(marker, result.area, result.check_id, result.detail)
+    _out.print(table)
+
+    failures = [r for r in results if r.severity is Severity.FAIL]
+    warnings = [r for r in results if r.severity is Severity.WARN]
+    if failures:
+        _out.print(
+            f"\n[red]{len(failures)} check(s) failed[/red] — sluice cannot run "
+            f"correctly until these are fixed."
+        )
+    elif warnings:
+        _out.print(f"\n[yellow]{len(warnings)} warning(s)[/yellow] — sluice will run.")
+    else:
+        _out.print("\n[green]All checks passed.[/green]")
+
+
 def _render_run_detail(entry) -> None:
     """One run in full, including which gates are done and which are pending."""
     detail = Table.grid(padding=(0, 2))
@@ -360,6 +404,53 @@ def status(
         _render_run_detail(payload)
     else:
         _render_overview(payload)
+
+
+@app.command()
+def doctor(context: typer.Context) -> None:
+    """Check that this installation can actually work.
+
+    [bold]setup proves your config is complete; doctor proves it works.[/bold]
+    Reads everything, changes nothing — no directory is created, no config
+    written, no repository checked out.
+
+    Exits 0 when nothing failed (warnings still exit 0, so a working-but-
+    degraded install stays scriptable) and 1 when anything failed.
+    """
+    settings = _settings(context)
+    config_path = resolve_config_path(settings.config)
+    try:
+        config = load_config(settings.config)
+    except ConfigError as no_config:
+        # Not the shared `_guard` message: doctor is the first command a new
+        # operator runs, and "no config file at ..." leaves them nowhere to go.
+        _err.print(
+            f"[red]sluice:[/red] {no_config}\n"
+            f"If sluice has not been installed on this machine yet, run "
+            f"[bold]sluice setup[/bold] — it writes the config and creates the "
+            f"database."
+        )
+        raise typer.Exit(EXIT_REFUSED) from None
+    with _guard():
+        results = run_doctor(config, _registry(), PRODUCTION_VERSION)
+
+    if settings.as_json:
+        _emit_json(
+            [
+                {
+                    "check": result.check_id,
+                    "area": result.area,
+                    "severity": result.severity.value,
+                    "detail": result.detail,
+                }
+                for result in results
+            ]
+        )
+    else:
+        _render_doctor(results, config_path)
+
+    if worst(results) is Severity.FAIL:
+        raise typer.Exit(EXIT_REFUSED)
 
 
 @app.command()

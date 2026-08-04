@@ -6,6 +6,7 @@ a thin layer, and testing it through anything but its actual entry point would t
 thing.
 """
 
+import hashlib
 import json
 
 import pytest
@@ -19,8 +20,12 @@ from sluice.config import (
     resolve_config_path,
 )
 from sluice.config.setup import plan_setup
+from sluice.config.schema import CONFIG_FIELDS
+from sluice.core.daemon import assemble_registry
 from sluice.core.db import initialize_database, insert_run, update_run, write_txn
-from sluice.gates.profiles import PRODUCTION_VERSION
+from sluice.core.profile import REFERENCE_PROFILES
+from sluice.doctor import Severity, run_doctor
+from sluice.gates.profiles import PRODUCTION_PROFILES, PRODUCTION_VERSION
 
 
 @pytest.fixture
@@ -388,3 +393,198 @@ def test_every_outcome_the_system_can_report_has_a_style():
         f"run_outcome can return {sorted(produced - set(_OUTCOME_STYLES))}, which "
         "the CLI has no style for — those runs would render uncoloured."
     )
+
+
+# ---------------------------------------------------------------------------
+# doctor.
+# ---------------------------------------------------------------------------
+
+
+def _write_config(path, **values):
+    """A config file with exactly the keys a test cares about."""
+    path.write_text(json.dumps(values), encoding="utf-8")
+    return path
+
+
+def test_doctor_exits_one_when_something_fails(deployment, capsys):
+    """Exit 1 on any FAIL, so a wrapper script cannot mistake it for success.
+
+    The deployment fixture configures only state_file and local_staging_dir, so
+    every operator-supplied key is missing — the shape of a half-finished
+    install, which is what doctor exists to catch.
+    """
+    exit_code = main(["--config", str(deployment.config_path), "doctor"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "FAIL" in output
+    assert "labkey_api_key_file" in output
+
+
+def test_doctor_names_the_setting_to_change_for_every_failure(deployment):
+    """A failure an operator cannot act on is noise.
+
+    Asserted over the results rather than the rendered table: the table prints
+    ``check_id`` in its own column, so any assertion made against the output is
+    satisfied by the table existing, whatever the detail says. Every failure
+    whose check *is* a config key must repeat that key in its detail, because
+    the detail is the sentence an operator reads and acts on.
+    """
+    config = load_config(str(deployment.config_path))
+    registry = assemble_registry(REFERENCE_PROFILES, PRODUCTION_PROFILES)
+    config_keys = {field.name for field in CONFIG_FIELDS}
+
+    failures = [
+        result
+        for result in run_doctor(config, registry, PRODUCTION_VERSION)
+        if result.severity is Severity.FAIL and result.check_id in config_keys
+    ]
+
+    assert failures, "the half-configured fixture produced no config failures"
+    unnamed = [
+        result.check_id for result in failures if result.check_id not in result.detail
+    ]
+    assert not unnamed, f"failures that never name the setting to change: {unnamed}"
+
+
+def test_doctor_exits_zero_on_warnings_only(tmp_path, capsys, monkeypatch):
+    """A degraded-but-working install must not break a deployment script.
+
+    WARN means "this works and should be fixed". Treating it as failure would
+    train operators to ignore the exit code, which costs more than the warning
+    is worth. Here every required key is satisfied and the only complaint is a
+    managed directory that setup would recreate.
+    """
+    launcher_dir = tmp_path / "bin"
+    launcher_dir.mkdir()
+    (launcher_dir / "pixi").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (launcher_dir / "pixi").chmod(0o755)
+    monkeypatch.setenv("PATH", str(launcher_dir))
+
+    state_file = tmp_path / "state.db"
+    initialize_database(state_file)
+    secret = tmp_path / "secret"
+    secret.write_text("value", encoding="utf-8")
+    secret.chmod(0o600)
+    repo = tmp_path / "nvd-repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    launch_base = tmp_path / "launch"
+    launch_base.mkdir()
+
+    # Everything `sluice setup` writes from the schema defaults. Listing them by
+    # hand would rot the day a tuning key is added, and their absence is a real
+    # FAIL — the daemon and the gates read them by subscript, so a config
+    # missing one raises KeyError mid-run.
+    setup_defaults = {
+        field.name: field.default
+        for field in CONFIG_FIELDS
+        if field.default is not None
+    }
+
+    operator_supplied = dict(
+        state_file=str(state_file),
+        events_file=str(tmp_path / "events.jsonl"),
+        run_events_dir=str(tmp_path / "absent-but-managed"),
+        local_source_dir=str(tmp_path),
+        local_staging_dir=str(staging),
+        disk_quota_root=str(tmp_path),
+        labkey_server="https://labkey.example",
+        labkey_experiments_project="Proj",
+        labkey_query="Experiments",
+        labkey_api_key_file=str(secret),
+        nvd_repo_dir=str(repo),
+        nvd_launch_base=str(launch_base),
+        nvd_log_dir=str(tmp_path),
+        nvd_results_base=str(tmp_path),
+        nvd_blast_db=str(tmp_path),
+        nvd_taxonomy_dir=str(tmp_path),
+        nvd_virus_index=str(tmp_path),
+        # The three reference-data keys with no default: only a human can
+        # supply them, and nothing but doctor ever asks.
+        nvd_blast_db_prefix="nt",
+        nvd_blast_db_version="2024-01",
+        nvd_virus_index_version="1.4",
+        slack_enabled=False,
+    )
+
+    config_path = _write_config(
+        tmp_path / "config.json", **setup_defaults | operator_supplied
+    )
+
+    exit_code = main(["--config", str(config_path), "doctor"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0, output
+    assert "warn" in output.lower()
+
+
+def test_doctor_with_no_config_at_all_points_at_setup(tmp_path, capsys):
+    """The first command a new operator runs must not be a dead end.
+
+    The shared loader message offers ``--config``, ``$SLUICE_CONFIG`` and a cwd
+    ``config.json`` — all three of which presuppose a config that exists. On a
+    machine where sluice has never been installed the answer is `sluice setup`,
+    and doctor is where that operator will be standing.
+    """
+    exit_code = main(["--config", str(tmp_path / "nope.json"), "doctor"])
+
+    error_output = capsys.readouterr().err
+    assert exit_code == 1
+    assert "no config file at" in error_output
+    assert "sluice setup" in error_output
+
+
+def test_doctor_json_output_is_parseable(deployment, capsys):
+    """`sluice --json doctor | jq` — a list of result objects, nothing else."""
+    main(["--json", "--config", str(deployment.config_path), "doctor"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert isinstance(payload, list)
+    assert {"check", "area", "severity", "detail"} <= set(payload[0])
+    assert any(entry["severity"] == "fail" for entry in payload)
+
+
+# SQLite's own sidecars beside a WAL database. Opening one read-only creates
+# them and a read-only connection cannot remove them again; they carry no sluice
+# data, and the daemon creates and destroys them on every write. The alternative
+# — an unlocked `immutable=1` read — misreads a database the daemon is
+# checkpointing and reports it as corrupt, which is a far worse thing to say.
+_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+
+
+def _tree_fingerprint(root):
+    """Every path under ``root``, with its mode and its content hash.
+
+    Recursive and content-sensitive on purpose: comparing top-level *names*
+    would miss a file written into a subdirectory, and would miss a database
+    rewritten in place — ``PRAGMA journal_mode`` is persisted in the SQLite file
+    header, so a diagnostic that "only reads" through the ordinary connection
+    factory changes the bytes without changing any name.
+    """
+    fingerprint = {}
+    for path in sorted(root.rglob("*")):
+        if path.name.endswith(_SQLITE_SIDECAR_SUFFIXES):
+            continue
+        stat_result = path.lstat()
+        digest = (
+            hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "dir"
+        )
+        fingerprint[str(path.relative_to(root))] = (stat_result.st_mode, digest)
+    return fingerprint
+
+
+def test_doctor_changes_nothing_on_disk(deployment, tmp_path, capsys):
+    """The never-mutates promise, asserted rather than trusted.
+
+    Doctor is run when things are already broken. A diagnostic that creates a
+    directory or a database while looking would make the next run's report a
+    lie about the state it inherited.
+    """
+    before = _tree_fingerprint(tmp_path)
+
+    main(["--config", str(deployment.config_path), "doctor"])
+
+    assert _tree_fingerprint(tmp_path) == before

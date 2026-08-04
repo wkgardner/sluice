@@ -1,9 +1,9 @@
 """Architecture guard: the one-way dependency ``gates -> core``.
 
-The framework core must import with ``sluice.gates``, ``sluice.api``, and
-``sluice.cli`` absent. If any module under ``sluice.core`` imports one of those
-packages, the pipeline is no longer a framework — you could not delete the
-production gates and still ship the core.
+The framework core must import with ``sluice.gates``, ``sluice.api``,
+``sluice.cli`` and ``sluice.doctor`` absent. If any module under ``sluice.core``
+imports one of those, the pipeline is no longer a framework — you could not
+delete the production gates and still ship the core.
 
 This test encodes that invariant as an executable guard (architecture design of
 record, sections 2.5 and 5). At bootstrap the packages are empty, so it is
@@ -16,8 +16,11 @@ import sys
 
 import pytest
 
-# Top-level sluice subpackages that core is forbidden to import.
-FORBIDDEN = ("sluice.gates", "sluice.api", "sluice.cli")
+# Top-level sluice modules and subpackages that core is forbidden to import.
+# `sluice.doctor` is listed in its own right: it imports gates, so a core import
+# of it would trip this guard only *transitively* today, and would evaporate the
+# moment doctor made that import lazy.
+FORBIDDEN = ("sluice.gates", "sluice.api", "sluice.cli", "sluice.doctor")
 
 
 class _DependencyBlocker:
