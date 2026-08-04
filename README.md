@@ -61,14 +61,17 @@ pixi run test    # run the pytest suite
 
 ## Configuration & secrets
 
-Real infrastructure values live **only** in a gitignored `config.json`. Copy the
-committed schema and fill it in:
+Real infrastructure values live **only** in a gitignored `config.toml`. The
+normal path is `sluice setup`, which writes one from the schema with every key
+explained in place. To start from the committed example instead:
 
 ```sh
-cp config.example.json config.json   # then replace every <placeholder>
+cp config.example.toml config.toml   # then replace every <placeholder>
 ```
 
-- `config.example.json` is **placeholders only** and is the committed schema.
+- `config.example.toml` is **placeholders only** and is the committed schema.
+- Section headers group keys for reading only — sluice discards them at load, so
+  a key works wherever you put it in the file.
 - Secrets are never config *values*: they live in untracked files referenced by
   the `*_file` keys, or in env. The Slack bot token is read from
   `SLACK_BOT_TOKEN`, never from config.

@@ -412,6 +412,75 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
         probe=ProbeKind.NONE,
         default=True,
     ),
+    ConfigField(
+        "nvd_trim_adapters",
+        FieldKind.VALUE,
+        "nvd analysis",
+        "Whether to trim sequencing adapters before analysis.",
+        probe=ProbeKind.NONE,
+        default=True,
+    ),
+    # -- NVD's own LabKey upload --------------------------------------------
+    # Distinct from the `labkey` group above, which is where sluice creates the
+    # experiment. These say where NVD puts its *results*, and they are a separate
+    # container on purpose — production uploads hits to a project the experiments
+    # do not live in. Every one of them must be emitted into the params file:
+    # NVD defaults anything absent to the production list compiled into its own
+    # repo, so an omitted key uploads real results rather than failing.
+    ConfigField(
+        "nvd_labkey",
+        FieldKind.VALUE,
+        "nvd labkey upload",
+        "Whether NVD uploads its results to LabKey at all.",
+        probe=ProbeKind.NONE,
+        default=True,
+    ),
+    ConfigField(
+        "nvd_labkey_server",
+        FieldKind.VALUE,
+        "nvd labkey upload",
+        "LabKey server NVD uploads results to. Usually the same host as "
+        "labkey_server, but kept separate so results can be sent elsewhere.",
+        probe=ProbeKind.ENDPOINT,
+    ),
+    ConfigField(
+        "nvd_labkey_project_name",
+        FieldKind.VALUE,
+        "nvd labkey upload",
+        "LabKey project path holding the hit lists NVD writes into.",
+        probe=ProbeKind.ENDPOINT,
+    ),
+    ConfigField(
+        "nvd_labkey_schema",
+        FieldKind.VALUE,
+        "nvd labkey upload",
+        "LabKey schema holding the hit lists.",
+        probe=ProbeKind.ENDPOINT,
+        default="lists",
+    ),
+    ConfigField(
+        "nvd_labkey_blast_fasta_list",
+        FieldKind.VALUE,
+        "nvd labkey upload",
+        "LabKey list receiving the per-hit FASTA records.",
+        probe=ProbeKind.ENDPOINT,
+    ),
+    ConfigField(
+        "nvd_labkey_blast_meta_hits_list",
+        FieldKind.VALUE,
+        "nvd labkey upload",
+        "LabKey list receiving the expanded metagenomic BLAST hits.",
+        probe=ProbeKind.ENDPOINT,
+    ),
+    ConfigField(
+        "nvd_labkey_exp_id_guard_list",
+        FieldKind.VALUE,
+        "nvd labkey upload",
+        "LabKey list NVD uses to make its own upload idempotent — as "
+        "load-bearing as the two hit lists, and as easy to point at the wrong "
+        "container.",
+        probe=ProbeKind.ENDPOINT,
+    ),
     # -- Slack --------------------------------------------------------------
     ConfigField(
         "slack_enabled",

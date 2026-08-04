@@ -18,13 +18,13 @@ their fakes rather than each other.
 """
 
 import hashlib
-import json
 import pathlib
 import shutil
 
 import pytest
 
-from sluice.config.setup import apply_plan, plan_setup
+from sluice.config import parse_config_text
+from sluice.config.setup import apply_plan, plan_setup, render_config_toml
 from sluice.core import control
 from sluice.core.daemon import detect_new_runs, prepare_database, process_run
 from sluice.core.profile import Applicability, build_profile
@@ -85,8 +85,8 @@ def installation(tmp_path, delivery):
     """A complete sluice install, created by the real setup path, in local mode."""
     home = tmp_path / "sluice-home"
     apply_plan(plan_setup(home=home))
-    config_path = home / "config.json"
-    config = json.loads(config_path.read_text())
+    config_path = home / "config.toml"
+    config = parse_config_text(config_path.read_text(), str(config_path))
     config.update(
         {
             "local_source_dir": str(delivery),
@@ -94,7 +94,7 @@ def installation(tmp_path, delivery):
             "disk_quota_root": str(home),
         }
     )
-    config_path.write_text(json.dumps(config), encoding="utf-8")
+    config_path.write_text(render_config_toml(config), encoding="utf-8")
     prepare_database(config, registry=REGISTRY, default_pipeline_version="dryrun-v1")
     return config
 

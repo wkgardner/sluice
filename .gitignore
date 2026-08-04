@@ -22,6 +22,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .venv/
+config.toml
+config.*.toml
 config.json
 config.*.json
 .env
@@ -47,7 +49,7 @@ logs/
 !/README.md
 !/HANDOFF.md
 !/CONTEXT.md
-!/config.example.json
+!/config.example.toml
 !/.github/workflows/*.yml
 
 # 5) The Python project — source and tests, matched by extension so caches and

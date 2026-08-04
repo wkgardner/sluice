@@ -32,7 +32,7 @@ notifier is a supported deployment mode, not a broken one.
 
 The bot token is read from ``slack_bot_token_file`` (sluice's convention for every credential:
 ``password_file``, ``labkey_api_key_file``) or from ``$SLACK_BOT_TOKEN``. It is deliberately NOT
-readable from ``config.json`` inline — that file is templated in the repo and a token has no
+readable from ``config.toml`` inline — that file is templated in the repo and a token has no
 business in it. The token is never logged, never returned, and never formatted into a message
 (ADR-0002, errata C5).
 """

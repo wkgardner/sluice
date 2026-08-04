@@ -64,19 +64,36 @@ sluice setup
 ```
 
 Creates `~/.sluice/` — config, database, logs, credential files — and migrates the database. Then
-edit `~/.sluice/config.json` to fill in the values it lists, and put your credentials in the empty
+edit `~/.sluice/config.toml` to fill in the values it lists, and put your credentials in the empty
 files under `~/.sluice/secrets/`.
+
+The config is grouped into sections with every key explained in a comment above it, so the file
+tells you what it wants without you coming back here. **Those sections are for reading only** —
+sluice discards them when it loads the file, so a key works wherever you put it, and moving one
+between sections changes nothing. The one thing that is an error is setting the same key twice in
+two different sections; sluice refuses to load that rather than silently picking one.
 
 On a later run it adds keys the new version introduced and leaves everything you have already set
 alone: no value you tuned is ever overwritten. Use `--dry-run` to see what it would change.
 
 Re-running against an existing config **asks first**, and copies the old file to
-`config.json.bak` before writing. Your values survive either way. The backup is there because the
-file is rewritten sorted and reformatted, which loses any ordering you arranged by hand — and
+`config.toml.bak` before writing. Your values survive either way. The backup is there because the
+file is regenerated from the schema, which loses any comments or ordering you added by hand — and
 loses unsaved changes if an editor has the file open, so **close it before re-running.** Pass
 `--yes` to skip the question. In a script, setup refuses rather than rewriting unasked.
 
-If it reports keys "not used by this version", they are left in place untouched.
+If it reports keys "not used by this version", they are left in place, collected under an
+`[unrecognised]` section so you can see what is no longer read.
+
+### Coming from a `config.json`
+
+Installs from before sluice used TOML have a `config.json`. The next `sluice setup` migrates it:
+your values move into `config.toml`, and **the old file is left exactly where it is**. Nothing is
+overwritten, so there is nothing to confirm and no backup to take — the old file is the backup.
+Delete it once you are happy, and until you do, `config.toml` is the one that counts.
+
+Every command still reads a `config.json` when no `config.toml` sits beside it, so upgrading
+sluice does not break anything before you get to `sluice setup`.
 
 ---
 
@@ -88,11 +105,12 @@ or a **local directory** (rehearsal, no credentials needed). It picks local mode
 
 ### Remote
 
-```json
-"remote_user":        "<remote_user>",
-"remote_host":        "<remote_host>",
-"remote_source_path": "<remote_source_path>",
-"password_file":      "~/.sluice/secrets/remote_password"
+```toml
+[detection]
+remote_user        = "<remote_user>"
+remote_host        = "<remote_host>"
+remote_source_path = "<remote_source_path>"
+password_file      = "~/.sluice/secrets/remote_password"
 ```
 
 The first three are yours to fill in — the real host, account and path live in your
@@ -139,8 +157,8 @@ missing, or the trailing slash.
 
 ### Local, for rehearsal
 
-```json
-"local_source_dir": "/path/to/a/folder/of/runs"
+```toml
+local_source_dir = "/path/to/a/folder/of/runs"
 ```
 
 Same layout rules, same run-detection filter, no SSH and no credentials. Clear the key to
@@ -191,8 +209,8 @@ for you.
 
 ## Everyday commands
 
-All commands take `--config PATH`, or read `$SLUICE_CONFIG`, or fall back to `./config.json`.
-After `sluice setup`, point `$SLUICE_CONFIG` at `~/.sluice/config.json` (or pass `--config`).
+All commands take `--config PATH`, or read `$SLUICE_CONFIG`, or fall back to `./config.toml`.
+After `sluice setup`, point `$SLUICE_CONFIG` at `~/.sluice/config.toml` (or pass `--config`).
 
 ### See everything
 
