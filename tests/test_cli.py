@@ -11,7 +11,14 @@ import json
 import pytest
 
 from sluice.cli import main
-from sluice.config import CONFIG_ENV_VAR, ConfigError, load_config, resolve_config_path
+from sluice.config import (
+    CONFIG_ENV_VAR,
+    HOME_ENV_VAR,
+    ConfigError,
+    load_config,
+    resolve_config_path,
+)
+from sluice.config.setup import plan_setup
 from sluice.core.db import initialize_database, insert_run, update_run, write_txn
 from sluice.gates.profiles import PRODUCTION_VERSION
 
@@ -54,17 +61,49 @@ def add_run(state_file, name, **columns):
 # ---------------------------------------------------------------------------
 
 
-def test_config_precedence_is_flag_then_env_then_cwd(tmp_path, monkeypatch):
-    """``--config`` beats ``$SLUICE_CONFIG`` beats ``./config.json``."""
-    monkeypatch.setenv(CONFIG_ENV_VAR, "/from/env.json")
+def test_config_precedence_is_flag_then_env_then_cwd_then_home(tmp_path, monkeypatch):
+    """``--config`` > ``$SLUICE_CONFIG`` > ``./config.json`` > ``<home>/config.json``."""
+    import pathlib
 
-    assert resolve_config_path("/explicit.json") == __import__("pathlib").Path(
-        "/explicit.json"
-    )
+    monkeypatch.setenv(CONFIG_ENV_VAR, "/from/env.json")
+    assert resolve_config_path("/explicit.json") == pathlib.Path("/explicit.json")
     assert str(resolve_config_path(None)) == "/from/env.json"
 
     monkeypatch.delenv(CONFIG_ENV_VAR)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv(HOME_ENV_VAR, str(home))
+
+    working = tmp_path / "cwd"
+    working.mkdir()
+    monkeypatch.chdir(working)
+
+    # Nothing in the working directory: fall through to the sluice home.
+    assert resolve_config_path(None) == home / "config.json"
+
+    # A config that is really there in the working directory still wins, which is
+    # what keeps a repo checkout usable without --config.
+    (working / "config.json").write_text("{}", encoding="utf-8")
     assert str(resolve_config_path(None)) == "config.json"
+
+
+def test_the_config_setup_writes_is_the_config_commands_read(tmp_path, monkeypatch):
+    """Setup's output path and the resolver's default must be the same file.
+
+    They were not, and it made a correct install unusable: `sluice setup` wrote
+    `~/.sluice/config.json`, every command looked for `./config.json`, and setup
+    then told the operator to run a command that could not find what it had just
+    written. Pinned as one assertion so the writer and the reader cannot drift
+    apart again.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setenv(HOME_ENV_VAR, str(home))
+    monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    plan = plan_setup()
+
+    assert plan.config_path == resolve_config_path(None)
 
 
 def test_a_missing_config_names_the_path_it_tried(tmp_path):

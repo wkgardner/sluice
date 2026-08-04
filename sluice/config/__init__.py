@@ -22,7 +22,10 @@ import pathlib
 __all__ = [
     "CONFIG_ENV_VAR",
     "DEFAULT_CONFIG_FILENAME",
+    "DEFAULT_HOME",
+    "HOME_ENV_VAR",
     "ConfigError",
+    "default_home",
     "load_config",
     "resolve_config_path",
 ]
@@ -34,6 +37,22 @@ CONFIG_ENV_VAR = "SLUICE_CONFIG"
 # given. A named constant, never derived from the package's install location —
 # deriving paths from where the code happens to live is the errata A7/D2 trap.
 DEFAULT_CONFIG_FILENAME = "config.json"
+
+# The directory `sluice setup` creates and owns. It lives here rather than in
+# `setup`, because it is not setup's private business: `resolve_config_path` has
+# to find the config setup wrote, and a second copy of this rule would let the
+# writer and the reader disagree about where the config lives — which is exactly
+# the bug that shipped when only setup knew.
+HOME_ENV_VAR = "SLUICE_HOME"
+DEFAULT_HOME = "~/.sluice"
+
+
+def default_home() -> pathlib.Path:
+    """The sluice home, honouring ``$SLUICE_HOME`` then falling back to ``~/.sluice``."""
+    from_environment = os.environ.get(HOME_ENV_VAR)
+    if from_environment:
+        return pathlib.Path(from_environment).expanduser()
+    return pathlib.Path(DEFAULT_HOME).expanduser()
 
 
 class ConfigError(RuntimeError):
@@ -47,12 +66,21 @@ class ConfigError(RuntimeError):
 def resolve_config_path(explicit_path=None) -> pathlib.Path:
     """Decide which config file to load, in precedence order.
 
-    ``--config`` beats ``$SLUICE_CONFIG`` beats ``./config.json``.
+    ``--config`` beats ``$SLUICE_CONFIG`` beats ``./config.json`` beats
+    ``<sluice home>/config.json``.
 
-    The chosen path is returned whether or not it exists, so the caller can report
-    *which* path was tried. "No config at /etc/sluice/config.json" is actionable in
-    a way that "config not found" is not, and loading a different config than
-    intended is the most common real-world config failure.
+    The last step is what makes a normal install work: ``sluice setup`` writes
+    the config into the sluice home, so a resolver that stopped at the working
+    directory sent every command looking somewhere setup never writes. The
+    working directory still wins when a ``config.json`` is actually there, which
+    keeps a repo checkout working without ``--config``; that step is therefore
+    the one place here that tests for existence, since an unconditional return
+    would make the home unreachable.
+
+    Otherwise the chosen path is returned whether or not it exists, so the caller
+    can report *which* path was tried. "No config at /etc/sluice/config.json" is
+    actionable in a way that "config not found" is not, and loading a different
+    config than intended is the most common real-world config failure.
 
     Args:
         explicit_path: the ``--config`` value, or ``None``.
@@ -65,7 +93,10 @@ def resolve_config_path(explicit_path=None) -> pathlib.Path:
     from_environment = os.environ.get(CONFIG_ENV_VAR)
     if from_environment:
         return pathlib.Path(from_environment)
-    return pathlib.Path(DEFAULT_CONFIG_FILENAME)
+    in_working_directory = pathlib.Path(DEFAULT_CONFIG_FILENAME)
+    if in_working_directory.is_file():
+        return in_working_directory
+    return default_home() / DEFAULT_CONFIG_FILENAME
 
 
 def load_config(explicit_path=None) -> dict:
@@ -87,9 +118,9 @@ def load_config(explicit_path=None) -> dict:
         raw_text = config_path.read_text(encoding="utf-8")
     except FileNotFoundError as missing:
         raise ConfigError(
-            f"no config file at {config_path} — pass --config PATH, set "
-            f"${CONFIG_ENV_VAR}, or run from a directory containing "
-            f"{DEFAULT_CONFIG_FILENAME}"
+            f"no config file at {config_path} — run `sluice setup` to create "
+            f"one, or point at an existing config with --config PATH or "
+            f"${CONFIG_ENV_VAR}"
         ) from missing
     except OSError as unreadable:
         raise ConfigError(f"cannot read {config_path}: {unreadable}") from unreadable

@@ -34,33 +34,21 @@ rather than merely convenient.
 
 import dataclasses
 import json
-import os
 import pathlib
 
+from sluice.config import default_home
 from sluice.config.schema import CONFIG_FIELDS, ConfigField, FieldKind
 
 __all__ = [
-    "DEFAULT_HOME",
     "SetupPlan",
     "SetupResult",
     "apply_plan",
-    "default_home",
     "plan_setup",
 ]
-
-DEFAULT_HOME = "~/.sluice"
 
 # Directories sluice creates and owns. secrets/ is deliberately first and gets
 # tighter permissions.
 _MANAGED_SUBDIRECTORIES = ("secrets", "state", "logs", "logs/runs", "logs/nvd")
-
-
-def default_home() -> pathlib.Path:
-    """The sluice home, honouring ``$SLUICE_HOME`` then falling back to ``~/.sluice``."""
-    from_environment = os.environ.get("SLUICE_HOME")
-    if from_environment:
-        return pathlib.Path(from_environment).expanduser()
-    return pathlib.Path(DEFAULT_HOME).expanduser()
 
 
 @dataclasses.dataclass(frozen=True)
