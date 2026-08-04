@@ -12,7 +12,7 @@ import pathlib
 
 import pytest
 
-from sluice.config.schema import CONFIG_FIELDS, FieldKind
+from sluice.config.schema import CONFIG_FIELDS, FieldKind, ProbeKind
 from sluice.config.setup import apply_plan, plan_setup
 
 SOURCE_ROOT = pathlib.Path(__file__).resolve().parent.parent / "sluice"
@@ -106,6 +106,36 @@ def test_the_schema_declares_nothing_the_code_ignores():
         "wire them up or drop them; asking an operator for a value that does "
         "nothing is worse than not asking"
     )
+
+
+def test_every_config_field_declares_a_probe():
+    """No config key exists without an answer to "is this checkable?".
+
+    ``probe`` deliberately has no default (design spec D5): a defaulted field
+    forgets by construction, and forgetting is the exact drift this whole
+    mechanism exists to prevent. This test is belt-and-braces — a missing
+    ``probe=`` is already a TypeError at import — but it states the rule where
+    someone tempted to add ``= ProbeKind.NONE`` as a default will read it.
+    """
+    for field in CONFIG_FIELDS:
+        assert isinstance(field.probe, ProbeKind), field.name
+
+
+def test_tuning_values_are_not_probed_and_paths_are():
+    """The classification is not uniform — it distinguishes what can be verified.
+
+    A guard against a lazy bulk edit that stamps every key ``NONE`` (which would
+    silently disable doctor) or every key ``PATH_EXISTS`` (which would make it
+    fail on every install). Names one key of each kind so the assertion says
+    what it means.
+    """
+    by_name = {field.name: field.probe for field in CONFIG_FIELDS}
+    assert by_name["nvd_entropy"] is ProbeKind.NONE
+    assert by_name["nvd_repo_dir"] is ProbeKind.PATH_EXISTS
+    assert by_name["labkey_api_key_file"] is ProbeKind.SECRET_READABLE
+    assert by_name["remote_host"] is ProbeKind.HOST_REACHABLE
+    assert by_name["nvd_command"] is ProbeKind.TOOLCHAIN
+    assert by_name["labkey_server"] is ProbeKind.ENDPOINT
 
 
 def test_every_field_can_explain_itself():
