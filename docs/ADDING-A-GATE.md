@@ -172,9 +172,9 @@ reference and production registries.
 
 ### 4. Teach `sluice doctor` about it
 
-**The drift guard will fail your build until you do this**, which is the point — a gate
-that reads a new path, secret or host without doctor learning to check it would ship a
-preflight that silently misses the thing most likely to be wrong.
+**The drift guard fails the suite until you do this.** A gate that reads a new path, secret
+or host without doctor learning to check it would ship a preflight that misses the thing
+most likely to be wrong.
 
 If your gate reads **any new config key**, that key needs a `probe=` classification in
 [`sluice/config/schema.py`](../sluice/config/schema.py). `ProbeKind` has no default, so

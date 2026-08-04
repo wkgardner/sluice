@@ -57,26 +57,24 @@ If you would rather not install anything, every command below also works as
 `pixi run sluice <command>` from inside the checkout, or from anywhere as
 `pixi run --manifest-path /path/to/sluice/pixi.toml sluice <command>`.
 
-**Then, and after every sluice release:**
+**Then, and again after every sluice release:**
 
 ```bash
 sluice setup
 ```
 
 Creates `~/.sluice/` — config, database, logs, credential files — and migrates the database. Then
-edit `~/.sluice/config.json` to fill in the values it lists as needed, and put your credentials in
-the empty files under `~/.sluice/secrets/`.
+edit `~/.sluice/config.json` to fill in the values it lists, and put your credentials in the empty
+files under `~/.sluice/secrets/`.
 
-**Run the same command again after every sluice release.** It adds keys the new version introduced
-and leaves everything you have already set completely alone — no value you tuned is ever
-overwritten. Use `--dry-run` to see what it would change.
+On a later run it adds keys the new version introduced and leaves everything you have already set
+alone: no value you tuned is ever overwritten. Use `--dry-run` to see what it would change.
 
 Re-running against an existing config **asks first**, and copies the old file to
-`config.json.bak` before writing. Your values survive either way; the backup exists because the
-file is rewritten sorted and reformatted, so hand-arranged ordering does not — and neither do
-unsaved changes sitting in an editor that has the file open. **Close it in your editor before
-re-running.** Pass `--yes` to skip the question; in a script, setup refuses rather than rewriting
-unasked.
+`config.json.bak` before writing. Your values survive either way. The backup is there because the
+file is rewritten sorted and reformatted, which loses any ordering you arranged by hand — and
+loses unsaved changes if an editor has the file open, so **close it before re-running.** Pass
+`--yes` to skip the question. In a script, setup refuses rather than rewriting unasked.
 
 If it reports keys "not used by this version", they are left in place untouched.
 
@@ -100,7 +98,7 @@ or a **local directory** (rehearsal, no credentials needed). It picks local mode
 The first three are yours to fill in — the real host, account and path live in your
 config, never in this guide.
 
-Two things about `remote_source_path` will cost you an evening if you get them wrong.
+`remote_source_path` has two rules, and breaking either one fails quietly rather than loudly.
 
 **It must end with a slash.** Without one, `rsync` describes the folder instead of listing
 what is inside it, and sluice sees a single run named after your directory rather than the
@@ -122,8 +120,7 @@ set `remote_source_path` to `deliveries/`. The run is then
 nothing, because the fastq files would be loose at the top level and a loose fastq is not
 a run.
 
-A relative path is relative to the SSH user's home directory. Other folders sitting beside
-yours on the server are harmless — see the filter below.
+Relative paths resolve against the SSH user's home directory.
 
 ### What sluice treats as a run
 
@@ -133,11 +130,11 @@ A folder is picked up only if it contains **both**:
   `.verified-copy.sha256`), and
 - at least one file ending `001.fastq.gz`.
 
-Anything else is ignored, which is why unrelated folders on the server do not matter. The
-files can sit at any depth inside the run folder — the delivery-folder layer above is
-found fine — and they are all counted toward that one run.
+Anything else is ignored, so unrelated folders sitting beside yours on the server do no
+harm. The files can sit at any depth inside the run folder — the delivery-folder layer
+above is found fine — and all of them count toward that one run.
 
-If a folder you expect is not being picked up, it is almost always one of these two
+If a folder you expect is not being picked up, it is almost always one of those two
 missing, or the trailing slash.
 
 ### Local, for rehearsal
