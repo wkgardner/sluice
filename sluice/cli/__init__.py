@@ -307,6 +307,16 @@ def _render_overview(status) -> None:
         )
 
 
+# Reading order for the report: least urgent first, so failures finish the table
+# next to the summary rather than scrolling off the top. Presentation only —
+# `doctor.worst` ranks severity for the exit code and is not this.
+_DOCTOR_DISPLAY_ORDER = {
+    Severity.SKIP: 0,
+    Severity.OK: 1,
+    Severity.WARN: 2,
+    Severity.FAIL: 3,
+}
+
 _DOCTOR_STYLES = {
     Severity.OK: ("[green]ok[/green]", "green"),
     Severity.WARN: ("[yellow]warn[/yellow]", "yellow"),
@@ -316,7 +326,16 @@ _DOCTOR_STYLES = {
 
 
 def _render_doctor(results, config_path) -> None:
-    """One row per check, in the order they ran, then a one-line summary.
+    """One row per check, least urgent first, then a one-line summary.
+
+    Ordered so the failures land at the bottom, directly above the summary and
+    wherever the operator's cursor already is. A full config runs to forty-odd
+    rows, and in run order the failures scatter through them and scroll off the
+    top — leaving the reader to hunt upward for the thing they have to act on.
+
+    The sort is stable, so within a severity the checks keep the order they ran
+    and related keys stay together rather than being shuffled into alphabetical
+    order.
 
     The config path is printed above the table because "doctor still says X
     after I fixed X" is almost always a second config file, and nothing else in
@@ -332,7 +351,7 @@ def _render_doctor(results, config_path) -> None:
     table.add_column("area", style="cyan")
     table.add_column("check")
     table.add_column("detail", overflow="fold")
-    for result in results:
+    for result in sorted(results, key=lambda r: _DOCTOR_DISPLAY_ORDER[r.severity]):
         marker, _style = _DOCTOR_STYLES[result.severity]
         table.add_row(marker, result.area, result.check_id, result.detail)
     _out.print(table)
