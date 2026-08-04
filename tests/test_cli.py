@@ -588,3 +588,65 @@ def test_doctor_changes_nothing_on_disk(deployment, tmp_path, capsys):
     main(["--config", str(deployment.config_path), "doctor"])
 
     assert _tree_fingerprint(tmp_path) == before
+
+
+# ---------------------------------------------------------------------------
+# setup — overwrite protection.
+# ---------------------------------------------------------------------------
+
+
+def test_a_fresh_install_does_not_prompt(tmp_path, capsys):
+    """Nothing exists yet, so there is nothing to lose and nothing to ask about."""
+    home = tmp_path / "h"
+
+    exit_code = main(["setup", "--home", str(home)])
+
+    assert exit_code == 0
+    assert (home / "config.json").is_file()
+
+
+def test_rewriting_an_existing_config_refuses_without_a_terminal(tmp_path, capsys):
+    """Non-interactive re-runs refuse rather than rewriting unasked.
+
+    A script that re-runs setup must not silently reformat an operator's config.
+    Refusing is recoverable in a way that a surprise rewrite is not, and the
+    message names the flag that opts in.
+    """
+    home = tmp_path / "h"
+    main(["setup", "--home", str(home)])
+    config_path = home / "config.json"
+    edited = json.loads(config_path.read_text())
+    edited["remote_host"] = "seq.example.edu"
+    config_path.write_text(json.dumps(edited), encoding="utf-8")
+    before = config_path.read_bytes()
+
+    exit_code = main(["setup", "--home", str(home)])
+
+    assert exit_code == 1
+    assert config_path.read_bytes() == before, "the config was rewritten anyway"
+    assert "--yes" in capsys.readouterr().err
+
+
+def test_yes_rewrites_and_keeps_a_backup_of_what_was_there(tmp_path, capsys):
+    """--yes proceeds, and the backup holds the OLD file, not a copy of the new one.
+
+    The backup is the real protection: values survive a rewrite either way, but
+    the file is re-sorted and reformatted, and an editor holding it open is a
+    live way to lose work. A backup taken after writing would be worthless.
+    """
+    home = tmp_path / "h"
+    main(["setup", "--home", str(home)])
+    config_path = home / "config.json"
+    edited = json.loads(config_path.read_text())
+    edited["remote_host"] = "seq.example.edu"
+    config_path.write_text(json.dumps(edited), encoding="utf-8")
+    before = config_path.read_bytes()
+
+    exit_code = main(["setup", "--home", str(home), "--yes"])
+
+    assert exit_code == 0
+    backup = home / "config.json.bak"
+    assert backup.is_file()
+    assert backup.read_bytes() == before, "the backup is not the pre-write file"
+    # And the hand-set value survived the rewrite, as it always must.
+    assert json.loads(config_path.read_text())["remote_host"] == "seq.example.edu"

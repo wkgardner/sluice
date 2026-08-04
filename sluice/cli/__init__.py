@@ -645,15 +645,22 @@ def setup(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Show what would change without writing anything."
     ),
+    assume_yes: bool = typer.Option(
+        False, "--yes", "-y", help="Do not ask before rewriting an existing config."
+    ),
 ) -> None:
     """Create or upgrade this installation — safe to re-run after every release.
 
     On a fresh machine this creates [cyan]~/.sluice[/cyan], migrates the database,
     and writes a config with every key the current version knows about.
 
-    On an existing one it [bold]adds only what is missing[/bold]. Values you have
-    already set are never overwritten — not by a default, not by a new release's
-    opinion — so upgrading is safe without reading a diff first.
+    On an existing one it [bold]adds only what is missing[/bold]. A value you
+    have already set is never overwritten, by a default or by anything else.
+
+    Rewriting an existing config asks first, and always copies the old file to
+    [cyan]config.json.bak[/cyan] before writing. The values survive either way;
+    the backup is there because the file is rewritten sorted and reformatted, so
+    anything you arranged by hand — or had unsaved in an editor — does not.
     """
     plan = plan_setup(home=home)
 
@@ -698,6 +705,42 @@ def setup(
         _out.print("\n[dim]--dry-run: nothing was written.[/dim]")
         return
 
+    backup_path = None
+    if plan.is_upgrade:
+        # Confirm before touching a config that already exists. Every value in it
+        # survives, but the file is rewritten sorted and reformatted, and an
+        # editor holding it open is a real way to lose work.
+        if not assume_yes:
+            if not sys.stdin.isatty():
+                _err.print(
+                    f"[red]sluice setup:[/red] {plan.config_path} already exists "
+                    "and this is not an interactive terminal. Re-run with "
+                    "[cyan]--yes[/cyan] to rewrite it, or [cyan]--dry-run[/cyan] "
+                    "to see what would change."
+                )
+                raise typer.Exit(EXIT_REFUSED)
+            _out.print(
+                f"\n[yellow]This rewrites[/yellow] [cyan]{plan.config_path}[/cyan]. "
+                "Your values are kept, but the file is re-sorted and reformatted — "
+                "close it in your editor first if you have unsaved changes."
+            )
+            if not typer.confirm("Continue?", default=False):
+                _out.print("[dim]Nothing was written.[/dim]")
+                raise typer.Exit(EXIT_OK)
+
+        # Back up before writing, not after: a backup taken afterwards would be a
+        # copy of the new file, which is worth nothing.
+        backup_path = plan.config_path.with_suffix(".json.bak")
+        try:
+            backup_path.write_bytes(plan.config_path.read_bytes())
+            backup_path.chmod(0o600)
+        except OSError as backup_failure:
+            _err.print(
+                f"[red]sluice setup:[/red] could not back up "
+                f"{plan.config_path} to {backup_path}: {backup_failure}"
+            )
+            raise typer.Exit(EXIT_REFUSED) from None
+
     with _guard():
         try:
             result = apply_plan(plan)
@@ -705,6 +748,8 @@ def setup(
             _err.print(f"[red]sluice setup:[/red] {setup_failure}")
             raise typer.Exit(EXIT_REFUSED) from None
 
+    if backup_path is not None:
+        _out.print(f"\n[dim]Previous config saved to {backup_path}[/dim]")
     _out.print(f"\n[green]Wrote[/green] {plan.config_path}")
     if result.database_initialised:
         _out.print("[green]Database[/green] migrated to the current schema.")
