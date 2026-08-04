@@ -684,7 +684,8 @@ def setup(
 
     if plan.needs_attention:
         _out.print(
-            "\n[bold red]These need a real value before sluice can run:[/bold red]"
+            "\n[bold red]These are written into the config as empty values — "
+            "fill them in before sluice can run:[/bold red]"
         )
         needs = Table(box=None, pad_edge=False, header_style="bold dim")
         needs.add_column("KEY")
@@ -715,12 +716,13 @@ def setup(
     remaining = [field.name for field in plan.needs_attention]
     if remaining:
         _out.print(
-            f"\n[yellow]Next:[/yellow] edit [cyan]{plan.config_path}[/cyan] and set "
-            f"{len(remaining)} value(s) listed above, then run "
-            "[cyan]sluice status[/cyan] to check it loads."
+            f"\n[yellow]Next:[/yellow] open [cyan]{plan.config_path}[/cyan] and fill "
+            f"in the {len(remaining)} empty value(s) listed above — every key is "
+            "already there, so you are editing values, not adding keys. Then run "
+            "[cyan]sluice doctor[/cyan] to check it."
         )
     else:
-        _out.print("\n[green]Ready.[/green] Try: [cyan]sluice status[/cyan]")
+        _out.print("\n[green]Ready.[/green] Try: [cyan]sluice doctor[/cyan]")
 
 
 def main(argv=None) -> int:
