@@ -26,6 +26,7 @@ __all__ = [
     "HOME_ENV_VAR",
     "ConfigError",
     "default_home",
+    "is_unfilled_placeholder",
     "load_config",
     "resolve_config_path",
 ]
@@ -61,6 +62,20 @@ class ConfigError(RuntimeError):
     One error type for every load-time failure, so the CLI can turn any of them
     into a single clear sentence rather than leaking a traceback at an operator.
     """
+
+
+def is_unfilled_placeholder(value) -> bool:
+    """Whether ``value`` is a ``<key_name>`` marker nobody has filled in.
+
+    ``config.example.json`` carries one per operator-supplied key, so an install
+    that started from the example rather than from ``sluice setup`` arrives with
+    them intact. A placeholder is a **live, broken value, not an absent one** —
+    every consumer here tests truthiness, so ``<nvd_profile>`` is passed to the
+    NVD tool as ``--profile '<nvd_profile>'`` and ``<local_source_dir>`` is swept
+    as a directory of that literal name. One home, so a caller asking "is this
+    configured?" cannot answer it with ``bool(value)`` and be quietly wrong.
+    """
+    return isinstance(value, str) and value.startswith("<") and value.endswith(">")
 
 
 def resolve_config_path(explicit_path=None) -> pathlib.Path:

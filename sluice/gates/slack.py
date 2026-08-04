@@ -45,12 +45,18 @@ from typing import Any
 import structlog
 
 __all__ = [
+    "TOKEN_ENV_VAR",
     "SlackNotifier",
     "make_notifier",
     "read_bot_token",
 ]
 
 log = structlog.get_logger("sluice.gates.slack")
+
+# The fallback the token is read from when no token file is configured. Named
+# because doctor must judge "is a token available?" by the same rule, and a
+# transcribed literal there would let an env-only install look unconfigured.
+TOKEN_ENV_VAR = "SLACK_BOT_TOKEN"
 
 # Terminal outcomes -> the icon leading the parent message. Keyed on the daemon's
 # own vocabulary (the `outcome` it passes to finish_run_thread).
@@ -91,7 +97,7 @@ def read_bot_token(config) -> str | None:
             return token
         log.error("slack.token_file_empty", **{"slack.token_file": str(token_file)})
         return None
-    return os.environ.get("SLACK_BOT_TOKEN") or None
+    return os.environ.get(TOKEN_ENV_VAR) or None
 
 
 def _format_metadata(experiment_id, size_tb) -> str:

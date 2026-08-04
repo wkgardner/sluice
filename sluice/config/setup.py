@@ -43,12 +43,32 @@ __all__ = [
     "SetupPlan",
     "SetupResult",
     "apply_plan",
+    "managed_directory_for",
     "plan_setup",
 ]
 
 # Directories sluice creates and owns. secrets/ is deliberately first and gets
 # tighter permissions.
 _MANAGED_SUBDIRECTORIES = ("secrets", "state", "logs", "logs/runs", "logs/nvd")
+
+
+def managed_directory_for(value) -> pathlib.Path:
+    """The directory setup creates for a ``MANAGED_PATH`` value.
+
+    A value with a suffix names a *file* sluice writes (``logs/events.jsonl``),
+    so the directory is its parent and the file itself appears only on first
+    write; a value without one names the directory itself (``logs/runs``).
+    Exported because doctor must judge a managed path by the same rule — warning
+    that ``events.jsonl`` is absent on a correctly set-up install is the
+    cry-wolf failure that trains operators to ignore the report.
+
+    The suffix test is a heuristic and misreads a *directory* whose name
+    contains a dot (``logs/2026.runs`` is judged the file ``runs`` under
+    ``logs/``). No shipped ``home_relative`` value has that shape, and the schema
+    carries no file-vs-directory flag to ask instead.
+    """
+    target = pathlib.Path(value)
+    return target.parent if target.suffix else target
 
 
 @dataclasses.dataclass(frozen=True)
