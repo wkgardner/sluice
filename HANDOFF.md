@@ -600,13 +600,24 @@ release candidate pending Plan B production gates.**
   `run_events_dir`), **placeholders only**, `slack_bot_token` deliberately omitted.
 - `.github/workflows/test.yml` — hermetic `pixi run test`, `locked: true`, pinned `pixi-version: v0.72.1`.
 - `tests/test_dependency_arrows.py` — the arch guard; installs a `sys.meta_path` blocker and imports
-  every `sluice.core` module with `gates`/`api`/`cli` forbidden. **Verified it actually fails** on an
-  injected violation.
+  every `sluice.core` module with `gates`/`api`/`cli`/**`doctor`** forbidden. **Verified it actually
+  fails** on an injected violation. `sluice.doctor` is listed in its own right (2026-08-03): it
+  imports gates, so a core import of it would trip the guard only *transitively*, and that
+  protection would evaporate the moment doctor made any of those imports lazy.
 - `tests/test_guard_hook.py` — 54 cases covering the production/secrets hook on both hosts' paths.
 - Package skeleton: `sluice/{__init__,core,api,cli,gates,config}/__init__.py`, `tests/__init__.py`.
 - `README.md`, `.gitignore`.
 - Docs: design of record, transition, errata, **subsystem map (present here, missing on CHTC)**.
 - `.claude/`: 12 agents + README, 2 hooks, `settings.json`, `skills/logging/`.
+- ✅ **`sluice/doctor.py` — preflight diagnosis, increment A (local tier)** 2026-08-03, committed
+  (§10 entry 3r). 745 lines; `tests/test_doctor.py` (846) + `tests/test_doctor_drift.py` (195).
+  Reachable as `sluice doctor`; `--json` supported. **Increments B and C are NOT built** — see 3r.
+- ✅ **`install.sh` — `sluice` on PATH** 2026-08-03, committed, allowlisted in `.gitignore`. Writes
+  a marked wrapper to `~/.local/bin/sluice`; no sudo, refuses to overwrite a `sluice` it did not
+  write, verifies the wrapper runs before claiming success.
+- ⚠️ **`docs/OPERATING.md` has UNCOMMITTED working-tree changes on this machine as of 2026-08-03** —
+  the steward's pre-commit scan REFUSED them (a real host and account in the new "Pointing sluice
+  at your data" section). Everything else from that session is committed. See 3r.
 
 ### CHTC (`/home/wkgardner/sluice`) — as of 2026-07-17, unverified since
 
@@ -1071,6 +1082,63 @@ actually protected.
    were the first, closed in 3o) — treat "the commit says it landed" as unverified until
    `git ls-files` agrees.
    **Next: `sluice doctor` (errata E2)** — unchanged.
+3r. ✅ **`sluice doctor` INCREMENT A + INSTALL/SETUP USABILITY** 2026-08-03. Eight commits on `main`
+   (`236fffe`, `829e22e`, `b70d4c9`, `47bd118`, `236547c`, `5423827`, `2ec98c2`, `ac490fd`), **not
+   pushed**. 716 → **719 tests green**; lint clean; every intermediate commit independently green
+   (657 → 659 → 661 → 715 → 716 → 719), so the history bisects.
+   - **`sluice doctor` (plan 16, resolves errata E2 in part)** — `sluice setup` proves a config is
+     *complete*; doctor proves it *works*. Each key's `ProbeKind` becomes a check; ok/warn/FAIL/skip;
+     exit 0 unless something FAILed. Went through **two adversarial review rounds** — the first
+     REJECTed with 5 blockers, **four of which were defects in the plan, not the implementation**:
+     doctor mutating the db via `PRAGMA journal_mode=WAL` (persisted in the file header, so a
+     "read-only" diagnostic rewrote the file it inspected — now a genuine read-only connection,
+     asserted by a recursive **content** fingerprint, since that mutation changes no filename); a
+     drift guard that silently exempted new gates (now a hard failure — a guard that exempts what it
+     has not been taught about protects nothing at the moment it is needed); `ProbeKind.NONE`
+     skipping required keys entirely; and `nvd_command` probed with `shutil.which` when the adapter
+     runs it through `pixi run --manifest-path` (a PATH probe would have failed every *correct*
+     install). Final verdict APPROVE WITH SHOULD-FIX, all nits closed, confirmed by build-verifier.
+   - **`ProbeKind` + 44 `probe=` classifications** committed separately from doctor itself, so 44
+     mechanical judgements are reviewable without being buried under a 745-line module. `probe` has
+     **no default** by design (spec D5): adding a config key must be impossible without answering
+     "can this be checked?".
+   - **A no-behaviour-change hoist commit** gives each rule doctor shares exactly one home
+     (`SOURCE_DIR_KEY`/`is_local_mode`, `nvd_manifest_path`, `TOKEN_ENV_VAR`,
+     `is_unfilled_placeholder`, `managed_directory_for`). Doctor's whole value is agreeing with what
+     the pipeline does; a transcribed copy of a rule is free to drift, and a preflight that
+     disagrees with the runtime is worse than none.
+   - ⚠️ **`sluice/gates/transfer.py:135` still holds a pre-existing copy of the local-mode rule and
+     was DELIBERATELY LEFT ALONE** — it is on the download path, not detection, so changing it is a
+     behavioural edit that belongs to its own commit rather than to a no-op preparation step.
+   - **A real usability bug fixed: `sluice setup` wrote `~/.sluice/config.json` while every command
+     read `./config.json`**, so a correct install was unusable and setup's closing message named a
+     command that could not find what it had just written. Root cause was a **twin** — `default_home()`
+     was private to `setup`, so the writer knew and the reader could not ask. Now shared, pinned by
+     `plan_setup().config_path == resolve_config_path(None)`.
+   - **Setup now writes every required key empty** (`SetupPlan.added_blank`) instead of listing key
+     names in a terminal for the operator to transcribe — a typo there yields a *silently absent*
+     key, which is harder to see than an empty one, for the operator and for doctor. Values are
+     still never invented. **Overwrite protection** added: re-running asks, backs up to
+     `config.json.bak` *before* writing, refuses non-interactively without `--yes`. The values were
+     never at risk (verified); the *file* is rewritten sorted and reformatted, which is how Will
+     lost hand-edits.
+   - **`install.sh`** puts `sluice` on PATH so the operator guide's commands work as written —
+     previously **every command in that guide would have failed** for the colleague. CLI help text
+     de-jargoned (`sluice daemon --help` was explaining the composition root and DI).
+   **⛔ BLOCKED, NOT DONE — `docs/OPERATING.md` is UNCOMMITTED.** The pre-commit scan REFUSED it: the
+   new "Pointing sluice at your data" section carries a **real account and a real host**
+   (`OPERATING.md:94-95`), plus a vendor delivery-folder convention at `:112`. `config.example.json`
+   uses `<remote_host>`/`<remote_user>` angle-bracket placeholders and the doc must match. **The
+   values are NOT in history** — this is the fresh-history gate working exactly as intended, for the
+   third time (gate-map §10 3m, and the two gitignore misses in 3o/3q). The doc's *content* is good
+   and wanted: the trailing slash on `remote_source_path` is load-bearing and nothing in code adds
+   it. **Action: replace the four values with placeholders, then commit.** Until then the operator
+   guide on disk documents `sluice doctor`, `install.sh` and the setup backup, and the committed one
+   does not.
+   **Next: doctor increments B and C** — **B** = the `--comprehensive` network tier (real
+   connections, credentials accepted by their services, a cheap read per endpoint, plus the source
+   manifest visibility check added in `6ef04e3`, and the file-vs-directory schema flag `PATH_EXISTS`
+   needs and does not have). **C** = the daemon startup gate. Neither is started.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
