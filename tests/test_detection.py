@@ -19,6 +19,7 @@ from sluice.gates import detection
 from sluice.gates.detection import (
     RemoteListingError,
     build_listing_command,
+    is_local_mode,
     list_remote_runs,
     parse_rsync_listing,
 )
@@ -187,6 +188,33 @@ def test_local_mode_command_lists_directory_contents():
         build_listing_command({"local_source_dir": ""})
 
 
+def test_is_local_mode_is_a_presence_check_not_a_value_check():
+    """Local mode iff ``local_source_dir`` is truthy — the rule, in one place.
+
+    An empty string is remote mode, not local: the example config documents the
+    key as optional-or-empty, so an operator who clears it is switching back to
+    remote and must not be silently left in local mode pointed at ``Path("")``,
+    which is the current directory. That exact confusion produced one of the
+    three integration bugs in 6cffb69.
+    """
+    assert is_local_mode({"local_source_dir": "/data/incoming"}) is True
+    assert is_local_mode({"local_source_dir": ""}) is False
+    assert is_local_mode({}) is False
+
+
+def test_build_listing_command_uses_the_exported_predicate(monkeypatch):
+    """``build_listing_command`` calls the predicate rather than re-deciding.
+
+    The twin guard. Patching the predicate to lie must change the command that
+    comes out; if it does not, a second copy of the rule has grown back inside
+    ``build_listing_command`` and the two can drift.
+    """
+    monkeypatch.setattr(detection, "is_local_mode", lambda config: True)
+    argv, overlay = detection.build_listing_command({"local_source_dir": "/x"})
+    assert "sshpass" not in argv
+    assert overlay == {}
+
+
 @pytest.mark.parametrize(
     "missing_key",
     ["remote_user", "remote_host", "remote_source_path", "password_file"],
@@ -257,7 +285,7 @@ def test_list_remote_runs_wraps_failure_with_stderr_never_password(
 
 
 def test_detection_module_is_list_only_and_core_clean():
-    """The adapter never transfers (no ``-avP``), imports no sluice, exports four names.
+    """The adapter never transfers (no ``-avP``), imports no sluice, exports six names.
 
     ``-avP`` is the download gate's resume-first flag — its absence here draws
     the detection/download boundary; the module needs no ``sluice`` imports at
@@ -282,8 +310,10 @@ def test_detection_module_is_list_only_and_core_clean():
     )
 
     assert detection.__all__ == [
+        "SOURCE_DIR_KEY",
         "RemoteListingError",
         "build_listing_command",
+        "is_local_mode",
         "list_remote_runs",
         "parse_rsync_listing",
     ]

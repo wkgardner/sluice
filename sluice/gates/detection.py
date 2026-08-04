@@ -19,11 +19,19 @@ import subprocess
 from pathlib import Path
 
 __all__ = [
+    "SOURCE_DIR_KEY",
     "RemoteListingError",
     "build_listing_command",
+    "is_local_mode",
     "list_remote_runs",
     "parse_rsync_listing",
 ]
+
+# The config key that decides the source mode. Exported so a caller asking about
+# the local source — `sluice doctor` does, to know which keys even apply — reads
+# it from here rather than repeating the string; a plain module constant needs
+# no imports, so this module stays stdlib-only.
+SOURCE_DIR_KEY = "local_source_dir"
 
 
 class RemoteListingError(RuntimeError):
@@ -103,6 +111,28 @@ def parse_rsync_listing(output: str) -> list[tuple[str, float]]:
     return sorted(candidates, key=lambda candidate: candidate[0])
 
 
+def is_local_mode(config) -> bool:
+    """Whether detection reads a local directory rather than a remote host.
+
+    A **presence** check, not a value default: the example config documents
+    ``local_source_dir`` as optional-or-empty, so an operator switching back to
+    remote clears the key rather than deleting it. Empty must therefore mean
+    remote — treating it as local would point the sweep at ``Path("")``, which
+    is the current working directory, and mint every subdirectory as a run.
+
+    Presence is the whole rule here: an unfilled ``<local_source_dir>``
+    placeholder is a path like any other, and ``rsync`` errors out on it at the
+    first sweep. Recognising it is ``sluice doctor``'s job — catching an unfilled
+    config *before* the run is what doctor is for — and this adapter needs no
+    ``sluice`` imports to do its own.
+
+    Exported because doctor builds on this rule to know which keys are even
+    applicable (demanding ``remote_host`` in local mode would be a false
+    failure).
+    """
+    return bool(config.get(SOURCE_DIR_KEY))
+
+
 def build_listing_command(config) -> tuple[list[str], dict[str, str]]:
     """Build the exact ``(argv, env_overlay)`` for a ``--list-only`` sweep.
 
@@ -133,8 +163,8 @@ def build_listing_command(config) -> tuple[list[str], dict[str, str]]:
             condition, not a config bug; it degrades through the daemon's
             fail-open detection containment.
     """
-    local_source_dir = config.get("local_source_dir")
-    if local_source_dir:
+    local_source_dir = config.get(SOURCE_DIR_KEY)
+    if is_local_mode(config):
         argv = [
             "rsync",
             "--list-only",

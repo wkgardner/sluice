@@ -28,9 +28,27 @@ __all__ = [
     "NvdToolClient",
     "build_nvd_command",
     "make_nvd_client",
+    "nvd_manifest_path",
 ]
 
 log = structlog.get_logger("sluice.gates.nvd_tool")
+
+
+def nvd_manifest_path(config) -> pathlib.Path:
+    """The pixi manifest pinning the environment ``nvd`` executes in.
+
+    One home for the rule, because ``sluice doctor`` checks the manifest this
+    module invokes and a transcribed copy there would be free to drift from the
+    argv actually run.
+
+    Args:
+        config: the loaded config. ``nvd_repo_dir`` by subscript — a missing key
+            must fail loudly rather than fall back to a guess (errata A7/D2).
+
+    Raises:
+        KeyError: ``nvd_repo_dir`` is not configured.
+    """
+    return pathlib.Path(config["nvd_repo_dir"]) / "pyproject.toml"
 
 
 class NvdToolError(RuntimeError):
@@ -54,8 +72,12 @@ def build_nvd_command(config, *arguments: str) -> list[str]:
 
     Returns:
         The full argv list.
+
+    Raises:
+        KeyError: propagated from ``nvd_manifest_path`` — ``nvd_repo_dir`` is
+            not configured.
     """
-    manifest = pathlib.Path(config["nvd_repo_dir"]) / "pyproject.toml"
+    manifest = nvd_manifest_path(config)
     nvd_command = config.get("nvd_command", "nvd")
     return [
         "pixi",
