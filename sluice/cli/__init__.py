@@ -219,7 +219,8 @@ app = typer.Typer(
     ),
     epilog=(
         "Config: [cyan]--config[/cyan], else [cyan]$SLUICE_CONFIG[/cyan], else "
-        "[cyan]./config.json[/cyan].  Full guide: [cyan]docs/OPERATING.md[/cyan]"
+        "[cyan]./config.json[/cyan], else the one [cyan]sluice setup[/cyan] wrote "
+        "under [cyan]~/.sluice[/cyan].  Full guide: [cyan]docs/OPERATING.md[/cyan]"
     ),
 )
 
@@ -391,8 +392,8 @@ def status(
 ) -> None:
     """Show every run, and whether the daemon is paused.
 
-    The board. Lists each run with its experiment id, outcome, and any quarantine
-    reason, and calls out runs that are waiting for a human.
+    Lists each run with its experiment id, outcome, and any quarantine reason,
+    and calls out the runs that are waiting for a human.
     """
     settings = _settings(context)
     with _guard():
@@ -550,9 +551,10 @@ def skip(
     reason: str = _REASON_OPTION,
     force: bool = typer.Option(False, "--force", help="Skip even a protected run."),
 ) -> None:
-    """Skip a run entirely — the daemon will not advance it at all.
+    """Skip a run — the daemon will never advance it.
 
-    For a run that should never be processed. Reverse with [cyan]unskip[/cyan].
+    For a run that should not be processed at all. Reverse with
+    [cyan]unskip[/cyan].
     """
     _call_op(_settings(context), control.skip, run, reason=reason, force=force)
 
@@ -572,7 +574,7 @@ def clear_error(
     """Forgive a quarantined run so it can try again — [bold]the recovery command[/bold].
 
     A gate failure quarantines its run, and it stays quarantined until you run
-    this — there is no automatic retry, by design.
+    this. There is no automatic retry.
 
     [bold]Fix the underlying cause first[/bold], then clear. The daemon re-runs the
     failed gate on its next look, and gates resume rather than restart: a
@@ -587,8 +589,8 @@ def clear_error(
 def pause(context: typer.Context, reason: str = _REASON_OPTION) -> None:
     """Stop the daemon advancing [bold]any[/bold] run.
 
-    Global stop, for when something is wrong fleet-wide — a full disk, an
-    unreachable server, bad config. In-flight gates still finish.
+    Use it when something is wrong for every run at once: a full disk, an
+    unreachable server, bad config. Gates already in flight still finish.
     """
     _call_op(_settings(context), control.pause, reason=reason)
 
@@ -608,14 +610,11 @@ def daemon(
 ) -> None:
     """Start the reconcile loop — the process that actually does the work.
 
-    [bold]The composition root.[/bold] Everything the core cannot import itself is
-    assembled here and injected: the production profile registry, the rsync
-    detection lister, and the Slack notifier. That separation is what keeps
-    [cyan]sluice.core[/cyan] free of gate and service code; the cost is that
-    nothing runs until something wires them together, which is this.
+    Nothing else in sluice moves data. The other commands change stored state;
+    this is what notices and acts on it.
 
-    Runs until interrupted. One instance at a time — a second start fails on the
-    lock rather than racing the first.
+    Runs until interrupted. Only one instance can run at a time — a second start
+    fails on the lock rather than racing the first.
     """
     settings = _settings(context)
     with _guard():
