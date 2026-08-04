@@ -1,6 +1,6 @@
 # Adding a gate
 
-A gate is the unit of pipeline work in sluice. Adding one is four edits in a fixed
+A gate is the unit of pipeline work in sluice. Adding one is five edits in a fixed
 order. Nothing else in the system changes — not the daemon, not the CLI, not the
 composition root.
 
@@ -170,7 +170,50 @@ Nothing downstream needs wiring. The composition root at
 [`cli/__init__.py:144`](../sluice/cli/__init__.py#L144) already unions the
 reference and production registries.
 
-### 4. Write the tests
+### 4. Teach `sluice doctor` about it
+
+**The drift guard will fail your build until you do this**, which is the point — a gate
+that reads a new path, secret or host without doctor learning to check it would ship a
+preflight that silently misses the thing most likely to be wrong.
+
+If your gate reads **any new config key**, that key needs a `probe=` classification in
+[`sluice/config/schema.py`](../sluice/config/schema.py). `ProbeKind` has no default, so
+you cannot add a key without answering "can this be checked?":
+
+```python
+    ConfigField(
+        "my_gate_reference_data",
+        FieldKind.EXTERNAL_PATH,
+        "my gate",
+        "Reference data the gate reads.",
+        probe=ProbeKind.PATH_EXISTS,   # or NONE, for a tuning value
+    ),
+```
+
+Then register the gate in **both** maps in [`sluice/doctor.py`](../sluice/doctor.py):
+
+```python
+GATE_CONFIG_GROUPS = {
+    ...
+    "my_gate": ("my gate",),          # the schema `group`s its config lives in
+}
+```
+
+and in `_GATE_MODULES` in [`tests/test_doctor_drift.py`](../tests/test_doctor_drift.py),
+naming every module the gate's config is read from — including any shared adapter:
+
+```python
+    "my_gate": ("sluice/gates/my_gate.py", "sluice/gates/my_adapter.py"),
+```
+
+A gate present in the production profile but missing from either map is a **hard failure**
+of the guard, not a silent exemption. If `pixi run test` tells you doctor does not cover a
+key you just started reading, add the group — do not weaken the guard.
+
+Severity is derived, not chosen: a missing `MANAGED_PATH` warns (setup recreates it),
+anything only a human can supply fails.
+
+### 5. Write the tests
 
 `tests/test_my_gate.py`. Aim most of them at layer 1 — the plain functions — and
 cover at minimum:
@@ -181,7 +224,7 @@ cover at minimum:
 
 ---
 
-## The five mistakes the system punishes structurally
+## The six mistakes the system punishes structurally
 
 These fail loudly rather than silently, but knowing them saves an hour each.
 
@@ -192,6 +235,7 @@ These fail loudly rather than silently, but knowing them saves an hour each.
 | `persists` pointing at your own `satisfied_column` | `validate_gates` raises — the persisted value would clobber the checkmark written in the same transaction. |
 | A FAILURE with no `reason` | `GateResult` refuses to construct. The schema's `CHECK ((error_reason IS NULL) = (errored_at IS NULL))` makes a reasonless quarantine unpersistable. |
 | Reading a config key not in the schema | `tests/test_config_schema.py` fails. It `ast`-parses the code for `config["key"]` reads and asserts the schema covers exactly those keys, in both directions. Add the key to [`sluice/config/schema.py`](../sluice/config/schema.py). |
+| A gate doctor does not know about | `tests/test_doctor_drift.py` fails, naming the gate and the config group to add. A gate in the production profile that is absent from `GATE_CONFIG_GROUPS` or `_GATE_MODULES` is a hard failure, never a silent pass — see step 4. |
 
 Two more that are quieter:
 

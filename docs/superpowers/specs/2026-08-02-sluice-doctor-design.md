@@ -123,15 +123,57 @@ change.
 
 | `ProbeKind` | Local tier | `--comprehensive` adds |
 |---|---|---|
-| `PATH_EXISTS` | exists, right type, readable | — |
+| `PATH_EXISTS` | exists, right type, readable — **superseded, see Errata** | — |
 | `SECRET_READABLE` | exists and is non-empty (**FAIL** if not); permissions wider than owner-only (**WARN**) | the credential is *accepted* by its service |
 | `HOST_REACHABLE` | set, not a `<placeholder>` | real connection through the adapter |
-| `EXECUTABLE` | resolvable on `PATH` | executes and reports its version |
+| `EXECUTABLE` | resolvable on `PATH` — **superseded, see Errata** | executes and reports its version |
 | `ENDPOINT` | set, not a `<placeholder>` | a cheap read against it |
-| `NONE` | present (already covered by the schema guard) | — |
+| `NONE` | present (already covered by the schema guard) — **superseded, see Errata** | — |
 
 Every non-`NONE` key gets the universal local check "present and not a leftover
 `<placeholder>` from setup" for free.
+
+### Errata (adversarial review of increment A and its fix round, 2026-08-02/03)
+
+**This block corrects the section above; it does not rewrite it.** Where the two
+disagree, the errata is what increment A ships and what increment B should build on.
+The original wording is left in place so the change is legible.
+
+- **`EXECUTABLE` is `TOOLCHAIN`, and its local tier is not `PATH`.** The only such key,
+  `nvd_command`, is never invoked from `PATH`: `sluice/gates/nvd_tool.py` runs it as
+  `pixi run --manifest-path <nvd_repo_dir>/pyproject.toml nvd`, precisely because a bare
+  `nvd` picks up whatever wrapper is installed (a stale `~/.local/bin/nvd` shim did that
+  in production). A `which` probe would FAIL every correct install and pass the one
+  broken install it was aimed at. The local tier checks the launcher and the manifest
+  that pin the environment; `--comprehensive` still executes the tool.
+- **`NONE` means "nothing to check *beyond* presence", and presence is checked.** The
+  parenthetical "already covered by the schema guard" is false: that guard reads the
+  source tree, and `load_config` explicitly declines to validate a deployed config's key
+  set. `nvd_blast_db_prefix`, `nvd_blast_db_version` and `nvd_virus_index_version` are
+  required, have no default, and are read by subscript at the last and most expensive
+  gate — nothing but doctor ever asks for them.
+- **The free `<placeholder>` check FAILs a required key and WARNs an optional one — it
+  is never silent.** An unfilled placeholder is a **live, broken value, not an absent
+  one**: no consumer in this codebase treats it as unset. `sluice/gates/nvd.py` does
+  `if profile:` and would run `--profile '<nvd_profile>'`; the daemon's watch lister
+  guards on `not str(watch_dir).strip()`, which a placeholder passes. So an optional key
+  holding one WARNs — visible, and it does not colour the exit code — rather than
+  SKIPping. (An earlier revision of this errata made it SKIP on the premise that a
+  placeholder is "the same state as empty". That premise is false, and it composed with
+  the source-mode rule below to make doctor print "All checks passed" on an install with
+  no data source at all.)
+- **`PATH_EXISTS` checks existence and readability, not type.** `nvd_repo_dir` naming a
+  file rather than a directory still reports `ok`. `ConfigField` carries no
+  file-vs-directory distinction to check against, and adding one is a schema change
+  increment A does not make; deferred to increment B, which needs the field anyway for
+  the `--comprehensive` tier.
+- **A cross-field rule the table cannot express: exactly one source mode.**
+  `local_source_dir` and `remote_host` are each `required=False`, because an install uses
+  one or the other, so *neither* being set passes every per-key check while
+  `_source_mode_skip` silences the other half as "not used in this source mode". A
+  one-of-N requirement has no per-key representation, so it is its own check
+  (`source_mode`), in the shape `nvd_launch_base_is_local` already establishes. Neither
+  configured FAILs; both configured FAILs naming the ambiguity.
 
 ## 6. Behaviour
 
