@@ -615,9 +615,10 @@ release candidate pending Plan B production gates.**
 - ✅ **`install.sh` — `sluice` on PATH** 2026-08-03, committed, allowlisted in `.gitignore`. Writes
   a marked wrapper to `~/.local/bin/sluice`; no sudo, refuses to overwrite a `sluice` it did not
   write, verifies the wrapper runs before claiming success.
-- ⚠️ **`docs/OPERATING.md` has UNCOMMITTED working-tree changes on this machine as of 2026-08-03** —
-  the steward's pre-commit scan REFUSED them (a real host and account in the new "Pointing sluice
-  at your data" section). Everything else from that session is committed. See 3r.
+- ✅ **`docs/OPERATING.md` — operator guide, now covering how to point sluice at a source**, plus
+  `sluice doctor`, `install.sh` and the setup backup. Committed 2026-08-03 (`d194cb0`) **after** the
+  steward's scan refused a first draft carrying a real host and account; sanitized and re-scanned
+  clean before it entered history. See 3r.
 
 ### CHTC (`/home/wkgardner/sluice`) — as of 2026-07-17, unverified since
 
@@ -1125,16 +1126,24 @@ actually protected.
    - **`install.sh`** puts `sluice` on PATH so the operator guide's commands work as written —
      previously **every command in that guide would have failed** for the colleague. CLI help text
      de-jargoned (`sluice daemon --help` was explaining the composition root and DI).
-   **⛔ BLOCKED, NOT DONE — `docs/OPERATING.md` is UNCOMMITTED.** The pre-commit scan REFUSED it: the
-   new "Pointing sluice at your data" section carries a **real account and a real host**
-   (`OPERATING.md:94-95`), plus a vendor delivery-folder convention at `:112`. `config.example.json`
-   uses `<remote_host>`/`<remote_user>` angle-bracket placeholders and the doc must match. **The
-   values are NOT in history** — this is the fresh-history gate working exactly as intended, for the
-   third time (gate-map §10 3m, and the two gitignore misses in 3o/3q). The doc's *content* is good
-   and wanted: the trailing slash on `remote_source_path` is load-bearing and nothing in code adds
-   it. **Action: replace the four values with placeholders, then commit.** Until then the operator
-   guide on disk documents `sluice doctor`, `install.sh` and the setup backup, and the committed one
-   does not.
+   - **`docs/OPERATING.md` — REFUSED, then sanitized and committed** (`d194cb0`, the ninth commit).
+     The first draft used Will's real test server as the worked example: a **real account and a real
+     host** in the "Pointing sluice at your data" JSON block, plus a vendor delivery-folder name.
+     The steward's pre-commit scan refused it, cited `file:line`, and did **not** self-correct it;
+     the values were replaced at the source with `<angle-bracket>` placeholders matching
+     `config.example.json`, a synthetic Illumina-shaped run name, and `<delivery-folder>`, then
+     re-scanned clean. **The values never entered history** — the fresh-history gate working as
+     intended, for the third time (gate-map §10 3m, and the two gitignore misses in 3o/3q).
+     **Lesson, same as 3m:** a document does not enter history until its production values are
+     placeholders or pointers — and an operator guide is copied more than any other file in the
+     repo, so a real value in one propagates into every fork of it.
+   - ⚠️ **LATENT BUG the guide currently documents around:** the trailing slash on
+     `remote_source_path` is load-bearing and **nothing in code adds it on the remote path**.
+     `build_listing_command` appends it itself in the local branch (`local_source_dir + "/"`) but
+     interpolates `remote_source_path` verbatim into `{user}@{host}:{path}`. Same class as one of
+     the three integration bugs fixed in `3696c94`. Documentation in two places (the key's schema
+     help text and the guide) is the only thing preventing a silent mis-detection — one run named
+     after the directory instead of the runs inside it. **Closing that asymmetry is unclaimed work.**
    **Next: doctor increments B and C** — **B** = the `--comprehensive` network tier (real
    connections, credentials accepted by their services, a cheap read per endpoint, plus the source
    manifest visibility check added in `6ef04e3`, and the file-vs-directory schema flag `PATH_EXISTS`
