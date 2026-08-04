@@ -434,8 +434,8 @@ def doctor(context: typer.Context) -> None:
     Reads everything, changes nothing — no directory is created, no config
     written, no repository checked out.
 
-    Exits 0 when nothing failed (warnings still exit 0, so a working-but-
-    degraded install stays scriptable) and 1 when anything failed.
+    Exits 1 if any check failed, 0 otherwise. Warnings do not change the exit
+    code, so an install that works but wants attention stays scriptable.
     """
     settings = _settings(context)
     config_path = resolve_config_path(settings.config)
@@ -676,9 +676,10 @@ def setup(
     have already set is never overwritten, by a default or by anything else.
 
     Rewriting an existing config asks first, and always copies the old file to
-    [cyan]config.json.bak[/cyan] before writing. The values survive either way;
-    the backup is there because the file is rewritten sorted and reformatted, so
-    anything you arranged by hand — or had unsaved in an editor — does not.
+    [cyan]config.json.bak[/cyan] before writing. Your values survive either way.
+    The backup is there because the file is rewritten sorted and reformatted,
+    which loses any ordering you arranged by hand, and loses unsaved changes if
+    an editor has the file open.
     """
     plan = plan_setup(home=home)
 
