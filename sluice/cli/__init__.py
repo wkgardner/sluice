@@ -219,7 +219,7 @@ app = typer.Typer(
     ),
     epilog=(
         "Config: [cyan]--config[/cyan], else [cyan]$SLUICE_CONFIG[/cyan], else "
-        "[cyan]./config.json[/cyan], else the one [cyan]sluice setup[/cyan] wrote "
+        "[cyan]./config.toml[/cyan], else the one [cyan]sluice setup[/cyan] wrote "
         "under [cyan]~/.sluice[/cyan].  Full guide: [cyan]docs/OPERATING.md[/cyan]"
     ),
 )
@@ -229,7 +229,7 @@ app = typer.Typer(
 def _global_options(
     context: typer.Context,
     config: str = typer.Option(
-        None, "--config", "-c", help="Path to config.json.", metavar="PATH"
+        None, "--config", "-c", help="Path to config.toml.", metavar="PATH"
     ),
     actor: str = typer.Option(
         None, "--actor", help="Who to record in the audit trail.", metavar="NAME"
@@ -676,18 +676,31 @@ def setup(
     have already set is never overwritten, by a default or by anything else.
 
     Rewriting an existing config asks first, and always copies the old file to
-    [cyan]config.json.bak[/cyan] before writing. Your values survive either way.
-    The backup is there because the file is rewritten sorted and reformatted,
-    which loses any ordering you arranged by hand, and loses unsaved changes if
-    an editor has the file open.
+    [cyan]config.toml.bak[/cyan] before writing. Your values survive either way.
+    The backup is there because the file is regenerated from the schema, which
+    loses any comments or ordering you arranged by hand, and loses unsaved
+    changes if an editor has the file open.
+
+    An install still on the older [cyan]config.json[/cyan] is migrated on the
+    next run: your values move into [cyan]config.toml[/cyan] and the JSON is
+    left exactly where it is.
     """
     plan = plan_setup(home=home)
 
     _out.print()
-    _out.print(
-        f"[bold]{'Upgrading' if plan.is_upgrade else 'Creating'}[/bold] sluice "
-        f"installation at [cyan]{plan.home}[/cyan]"
-    )
+    if plan.migrated_from is not None:
+        action = "Migrating"
+    elif plan.is_upgrade:
+        action = "Upgrading"
+    else:
+        action = "Creating"
+    _out.print(f"[bold]{action}[/bold] sluice installation at [cyan]{plan.home}[/cyan]")
+    if plan.migrated_from is not None:
+        _out.print(
+            f"\nCarrying your values from [cyan]{plan.migrated_from}[/cyan] into "
+            f"[cyan]{plan.config_path}[/cyan]. The old file is left in place — "
+            "delete it once you are happy."
+        )
 
     if plan.added_with_default:
         table = Table(box=None, pad_edge=False, header_style="bold dim")
@@ -740,8 +753,8 @@ def setup(
                 raise typer.Exit(EXIT_REFUSED)
             _out.print(
                 f"\n[yellow]This rewrites[/yellow] [cyan]{plan.config_path}[/cyan]. "
-                "Your values are kept, but the file is re-sorted and reformatted — "
-                "close it in your editor first if you have unsaved changes."
+                "Your values are kept, but the file is regenerated — close it in "
+                "your editor first if you have unsaved changes."
             )
             if not typer.confirm("Continue?", default=False):
                 _out.print("[dim]Nothing was written.[/dim]")
@@ -749,7 +762,7 @@ def setup(
 
         # Back up before writing, not after: a backup taken afterwards would be a
         # copy of the new file, which is worth nothing.
-        backup_path = plan.config_path.with_suffix(".json.bak")
+        backup_path = plan.config_path.with_suffix(".toml.bak")
         try:
             backup_path.write_bytes(plan.config_path.read_bytes())
             backup_path.chmod(0o600)

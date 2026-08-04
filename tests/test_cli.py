@@ -1,7 +1,7 @@
 """Behavioral tests for the ``sluice`` CLI and the config loader (plan 15 increment 4).
 
 Every test drives ``main(argv)`` against a real database built through the real migrations and a
-real ``config.json`` under ``tmp_path``, then reads captured stdout. Nothing is mocked: the CLI is
+real ``config.toml`` under ``tmp_path``, then reads captured stdout. Nothing is mocked: the CLI is
 a thin layer, and testing it through anything but its actual entry point would test the wrong
 thing.
 """
@@ -17,9 +17,10 @@ from sluice.config import (
     HOME_ENV_VAR,
     ConfigError,
     load_config,
+    parse_config_text,
     resolve_config_path,
 )
-from sluice.config.setup import plan_setup
+from sluice.config.setup import plan_setup, render_config_toml
 from sluice.config.schema import CONFIG_FIELDS
 from sluice.core.daemon import assemble_registry
 from sluice.core.db import initialize_database, insert_run, update_run, write_txn
@@ -33,15 +34,10 @@ def deployment(tmp_path):
     """A config file plus an initialized database, as a real install would have."""
     state_file = tmp_path / "sluice_state.db"
     initialize_database(state_file)
-    config_path = tmp_path / "config.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "state_file": str(state_file),
-                "local_staging_dir": str(tmp_path / "staging"),
-            }
-        ),
-        encoding="utf-8",
+    config_path = _write_config(
+        tmp_path / "config.toml",
+        state_file=str(state_file),
+        local_staging_dir=str(tmp_path / "staging"),
     )
     return types_namespace(config_path=config_path, state_file=state_file)
 
@@ -67,12 +63,12 @@ def add_run(state_file, name, **columns):
 
 
 def test_config_precedence_is_flag_then_env_then_cwd_then_home(tmp_path, monkeypatch):
-    """``--config`` > ``$SLUICE_CONFIG`` > ``./config.json`` > ``<home>/config.json``."""
+    """``--config`` > ``$SLUICE_CONFIG`` > ``./config.toml`` > ``<home>/config.toml``."""
     import pathlib
 
-    monkeypatch.setenv(CONFIG_ENV_VAR, "/from/env.json")
-    assert resolve_config_path("/explicit.json") == pathlib.Path("/explicit.json")
-    assert str(resolve_config_path(None)) == "/from/env.json"
+    monkeypatch.setenv(CONFIG_ENV_VAR, "/from/env.toml")
+    assert resolve_config_path("/explicit.toml") == pathlib.Path("/explicit.toml")
+    assert str(resolve_config_path(None)) == "/from/env.toml"
 
     monkeypatch.delenv(CONFIG_ENV_VAR)
     home = tmp_path / "home"
@@ -84,10 +80,16 @@ def test_config_precedence_is_flag_then_env_then_cwd_then_home(tmp_path, monkeyp
     monkeypatch.chdir(working)
 
     # Nothing in the working directory: fall through to the sluice home.
-    assert resolve_config_path(None) == home / "config.json"
+    assert resolve_config_path(None) == home / "config.toml"
 
     # A config that is really there in the working directory still wins, which is
     # what keeps a repo checkout usable without --config.
+    (working / "config.toml").write_text("", encoding="utf-8")
+    assert str(resolve_config_path(None)) == "config.toml"
+
+    # A pre-TOML install is still found, so upgrading sluice does not break
+    # every command before the operator reaches `sluice setup`.
+    (working / "config.toml").unlink()
     (working / "config.json").write_text("{}", encoding="utf-8")
     assert str(resolve_config_path(None)) == "config.json"
 
@@ -96,7 +98,7 @@ def test_the_config_setup_writes_is_the_config_commands_read(tmp_path, monkeypat
     """Setup's output path and the resolver's default must be the same file.
 
     They were not, and it made a correct install unusable: `sluice setup` wrote
-    `~/.sluice/config.json`, every command looked for `./config.json`, and setup
+    `~/.sluice/config.toml`, every command looked for `./config.toml`, and setup
     then told the operator to run a command that could not find what it had just
     written. Pinned as one assertion so the writer and the reader cannot drift
     apart again.
@@ -125,10 +127,10 @@ def test_a_missing_config_names_the_path_it_tried(tmp_path):
     assert CONFIG_ENV_VAR in str(raised.value)
 
 
-def test_invalid_json_is_reported_as_a_config_error(tmp_path):
-    """A malformed config fails as ConfigError, not a raw JSONDecodeError."""
-    bad = tmp_path / "config.json"
-    bad.write_text("{not json", encoding="utf-8")
+def test_invalid_config_text_is_reported_as_a_config_error(tmp_path):
+    """A malformed config fails as ConfigError, not a raw parser exception."""
+    bad = tmp_path / "config.toml"
+    bad.write_text("not [ toml", encoding="utf-8")
 
     with pytest.raises(ConfigError):
         load_config(str(bad))
@@ -401,9 +403,21 @@ def test_every_outcome_the_system_can_report_has_a_style():
 
 
 def _write_config(path, **values):
-    """A config file with exactly the keys a test cares about."""
-    path.write_text(json.dumps(values), encoding="utf-8")
+    """A config file with exactly the keys a test cares about.
+
+    Written through the real emitter rather than a hand-rolled TOML string, so a
+    test config is the same shape as one ``sluice setup`` produces — including
+    for keys the schema does not declare, which ride along as unrecognised.
+    """
+    known = {field.name for field in CONFIG_FIELDS}
+    unknown = tuple(key for key in values if key not in known)
+    path.write_text(render_config_toml(values, unknown), encoding="utf-8")
     return path
+
+
+def _read_config(path) -> dict:
+    """The config file as flat keys, the way every sluice command reads it."""
+    return parse_config_text(path.read_text(encoding="utf-8"), str(path))
 
 
 def test_doctor_exits_one_when_something_fails(deployment, capsys):
@@ -507,11 +521,19 @@ def test_doctor_exits_zero_on_warnings_only(tmp_path, capsys, monkeypatch):
         nvd_blast_db_prefix="nt",
         nvd_blast_db_version="2024-01",
         nvd_virus_index_version="1.4",
+        # NVD's own upload targets. No default is possible for any of them: a
+        # baked-in list name would be a production value in the source, and the
+        # one it would be is the live results list.
+        nvd_labkey_server="https://labkey.example",
+        nvd_labkey_project_name="Proj/Uploads",
+        nvd_labkey_blast_fasta_list="example_fasta_list",
+        nvd_labkey_blast_meta_hits_list="example_meta_list",
+        nvd_labkey_exp_id_guard_list="example_guard_list",
         slack_enabled=False,
     )
 
     config_path = _write_config(
-        tmp_path / "config.json", **setup_defaults | operator_supplied
+        tmp_path / "config.toml", **setup_defaults | operator_supplied
     )
 
     exit_code = main(["--config", str(config_path), "doctor"])
@@ -525,7 +547,7 @@ def test_doctor_with_no_config_at_all_points_at_setup(tmp_path, capsys):
     """The first command a new operator runs must not be a dead end.
 
     The shared loader message offers ``--config``, ``$SLUICE_CONFIG`` and a cwd
-    ``config.json`` — all three of which presuppose a config that exists. On a
+    ``config.toml`` — all three of which presuppose a config that exists. On a
     machine where sluice has never been installed the answer is `sluice setup`,
     and doctor is where that operator will be standing.
     """
@@ -602,7 +624,7 @@ def test_a_fresh_install_does_not_prompt(tmp_path, capsys):
     exit_code = main(["setup", "--home", str(home)])
 
     assert exit_code == 0
-    assert (home / "config.json").is_file()
+    assert (home / "config.toml").is_file()
 
 
 def test_rewriting_an_existing_config_refuses_without_a_terminal(tmp_path, capsys):
@@ -614,10 +636,10 @@ def test_rewriting_an_existing_config_refuses_without_a_terminal(tmp_path, capsy
     """
     home = tmp_path / "h"
     main(["setup", "--home", str(home)])
-    config_path = home / "config.json"
-    edited = json.loads(config_path.read_text())
+    config_path = home / "config.toml"
+    edited = _read_config(config_path)
     edited["remote_host"] = "seq.example.edu"
-    config_path.write_text(json.dumps(edited), encoding="utf-8")
+    _write_config(config_path, **edited)
     before = config_path.read_bytes()
 
     exit_code = main(["setup", "--home", str(home)])
@@ -631,25 +653,25 @@ def test_yes_rewrites_and_keeps_a_backup_of_what_was_there(tmp_path, capsys):
     """--yes proceeds, and the backup holds the OLD file, not a copy of the new one.
 
     The backup is the real protection: values survive a rewrite either way, but
-    the file is re-sorted and reformatted, and an editor holding it open is a
+    the file is regenerated from the schema, and an editor holding it open is a
     live way to lose work. A backup taken after writing would be worthless.
     """
     home = tmp_path / "h"
     main(["setup", "--home", str(home)])
-    config_path = home / "config.json"
-    edited = json.loads(config_path.read_text())
+    config_path = home / "config.toml"
+    edited = _read_config(config_path)
     edited["remote_host"] = "seq.example.edu"
-    config_path.write_text(json.dumps(edited), encoding="utf-8")
+    _write_config(config_path, **edited)
     before = config_path.read_bytes()
 
     exit_code = main(["setup", "--home", str(home), "--yes"])
 
     assert exit_code == 0
-    backup = home / "config.json.bak"
+    backup = home / "config.toml.bak"
     assert backup.is_file()
     assert backup.read_bytes() == before, "the backup is not the pre-write file"
     # And the hand-set value survived the rewrite, as it always must.
-    assert json.loads(config_path.read_text())["remote_host"] == "seq.example.edu"
+    assert _read_config(config_path)["remote_host"] == "seq.example.edu"
 
 
 def test_doctor_puts_failures_at_the_bottom(deployment, capsys):

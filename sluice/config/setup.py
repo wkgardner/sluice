@@ -21,7 +21,7 @@ when it is most needed.
 exist in the world (mounts, reference data, the sequencing server)::
 
     ~/.sluice/
-      config.json          the config, 0600
+      config.toml          the config, 0600
       secrets/             credential files, 0700 dir / 0600 files
       state/               the SQLite database
       logs/                events.jsonl, per-run logs, per-experiment NVD logs
@@ -30,14 +30,37 @@ exist in the world (mounts, reference data, the sequencing server)::
 Putting ``nvd-launch`` here is not incidental. It has to be on local disk rather than the shared
 staging tree, and a home directory is local on every host sluice runs on, so the default is correct
 rather than merely convenient.
+
+## The file is regenerated, not edited
+
+``render_config_toml`` writes the whole file from the schema every run: one table per group, each
+key preceded by its ``ConfigField.help``. That is why no comment-preserving TOML library is needed
+— comments are re-derived rather than round-tripped — and why the file cannot describe a key
+differently from ``sluice doctor``, which reads the same help text.
+
+The cost is that a comment an operator adds by hand does not survive the next setup. Values do,
+which is the half that matters; the backup and the confirmation prompt exist for the other half.
+
+## Migrating a pre-TOML install
+
+An install with a ``config.json`` and no ``config.toml`` is carried across automatically: setup
+reads the JSON, writes the TOML, and **leaves the JSON exactly where it is**. Nothing is
+overwritten, so the migration needs no confirmation and no backup, and undoing it means deleting
+one file.
 """
 
 import dataclasses
-import json
 import pathlib
+import textwrap
 
-from sluice.config import default_home
-from sluice.config.schema import CONFIG_FIELDS, ConfigField, FieldKind
+from sluice.config import (
+    DEFAULT_CONFIG_FILENAME,
+    LEGACY_CONFIG_FILENAME,
+    ConfigError,
+    default_home,
+    parse_config_text,
+)
+from sluice.config.schema import CONFIG_FIELDS, ConfigField, FieldKind, fields_by_group
 
 __all__ = [
     "SetupPlan",
@@ -45,11 +68,22 @@ __all__ = [
     "apply_plan",
     "managed_directory_for",
     "plan_setup",
+    "render_config_toml",
 ]
 
 # Directories sluice creates and owns. secrets/ is deliberately first and gets
 # tighter permissions.
 _MANAGED_SUBDIRECTORIES = ("secrets", "state", "logs", "logs/runs", "logs/nvd")
+
+# Where keys from an older release land — present in the file, no longer in the
+# schema. Named rather than dropped: setup never deletes an operator's value, and
+# a key sitting under a table that says "nothing reads this" is a clearer report
+# than the same key silently mixed in with live ones.
+_UNRECOGNISED_TABLE = "unrecognised"
+
+# Comment text wraps here. Narrow enough to stay readable beside a value in a
+# split editor pane.
+_COMMENT_WIDTH = 76
 
 
 def managed_directory_for(value) -> pathlib.Path:
@@ -69,6 +103,110 @@ def managed_directory_for(value) -> pathlib.Path:
     """
     target = pathlib.Path(value)
     return target.parent if target.suffix else target
+
+
+def _toml_table_name(group: str) -> str:
+    """A schema group as a bare TOML table name (``nvd analysis`` → ``nvd_analysis``).
+
+    Bare rather than quoted because ``["nvd analysis"]`` is legal TOML that reads
+    like a mistake. The name is cosmetic in any case — ``flatten_tables`` discards
+    it, so this never has to round-trip back to the group.
+    """
+    return group.replace(" ", "_")
+
+
+def _toml_value(value) -> str:
+    """One config value as a TOML scalar.
+
+    Bools before ints deliberately: ``bool`` is a subclass of ``int`` in Python,
+    so checking ``int`` first would write ``slack_enabled = 0`` and quietly change
+    the type an operator reads.
+
+    Raises:
+        TypeError: a value that is not a string, bool or number. sluice has no
+            such config key today, and a silent ``str()`` of one would produce a
+            file that parses back as something else.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        escaped = escaped.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+        return f'"{escaped}"'
+    raise TypeError(
+        f"cannot write {type(value).__name__} to the config: sluice config "
+        "values are strings, booleans and numbers"
+    )
+
+
+def _comment_lines(text: str) -> list[str]:
+    """``text`` as wrapped ``#`` comment lines."""
+    return [f"# {line}" for line in textwrap.wrap(text, width=_COMMENT_WIDTH)]
+
+
+def render_config_toml(values: dict, unknown_keys=()) -> str:
+    """Render the config file: one table per schema group, every key explained.
+
+    The whole point of the TOML move. Section headers and the per-key help come
+    from the schema, so the file an operator edits explains itself and cannot
+    describe a key differently from ``sluice doctor`` — both read
+    ``ConfigField.help``.
+
+    Setup regenerates this file in full on every run rather than editing it in
+    place, which is why no comment-preserving TOML library is needed: the
+    comments are not preserved, they are re-derived. What *is* preserved is every
+    value, which is the part that matters.
+
+    Args:
+        values: the flat key → value mapping to write. Keys absent from the
+            schema are written under the unrecognised table if listed in
+            ``unknown_keys``, and otherwise skipped.
+        unknown_keys: keys to carry forward that the schema no longer declares.
+
+    Returns:
+        The file's full text, ending in a newline.
+    """
+    lines = [
+        "# sluice configuration.",
+        "#",
+        "# Section headers group keys for reading only — sluice ignores them, so a",
+        "# key works wherever you put it. Every key's own name is what matters.",
+        "#",
+        "# Regenerated by `sluice setup`: your values are kept, these comments are",
+        "# rewritten. Real infrastructure values live here and nowhere else.",
+    ]
+
+    for group, fields in fields_by_group().items():
+        present = [field for field in fields if field.name in values]
+        if not present:
+            continue
+        lines.append("")
+        lines.append(f"[{_toml_table_name(group)}]")
+        for field in present:
+            lines.append("")
+            lines.extend(_comment_lines(field.help))
+            if not field.required:
+                lines.append("# Optional — leave empty to switch it off.")
+            lines.append(f"{field.name} = {_toml_value(values[field.name])}")
+
+    carried = [key for key in unknown_keys if key in values]
+    if carried:
+        lines.append("")
+        lines.append(f"[{_UNRECOGNISED_TABLE}]")
+        lines.append("")
+        lines.extend(
+            _comment_lines(
+                "Nothing in this version of sluice reads these. They are kept "
+                "because setup never deletes a value you set — delete them "
+                "yourself once you are sure."
+            )
+        )
+        for key in carried:
+            lines.append(f"{key} = {_toml_value(values[key])}")
+
+    return "\n".join(lines) + "\n"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -97,11 +235,24 @@ class SetupPlan:
     needs_attention: tuple[ConfigField, ...]
     # Keys present in the config file that no longer appear in the schema.
     unknown_keys: tuple[str, ...]
+    # The pre-TOML `config.json` these values came from, if this run is carrying
+    # an older install across. `None` for a fresh install and for one already on
+    # TOML. Distinct from `is_upgrade`, which is about the TOML file itself:
+    # a migration writes a config.toml that does not exist yet, so it overwrites
+    # nothing and needs neither a confirmation nor a backup.
+    migrated_from: pathlib.Path | None = None
 
     @property
     def merged(self) -> dict:
         """The config this plan would write."""
         return {**self.existing, **self.added_with_default, **self.added_blank}
+
+    @property
+    def source_path(self) -> pathlib.Path | None:
+        """The file existing values were read from, or ``None`` if there was none."""
+        if self.migrated_from is not None:
+            return self.migrated_from
+        return self.config_path if self.is_upgrade else None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -128,31 +279,48 @@ def plan_setup(home=None, config_path=None) -> SetupPlan:
     value is carried forward verbatim — this function has no opinion about values
     that are already set, which is what makes re-running safe.
 
+    An install that predates the TOML move is carried across here: when there is
+    no ``config.toml`` but a ``config.json`` sits beside where one would go, its
+    values become the existing ones. The JSON is only read — ``apply_plan``
+    writes the TOML and leaves the old file alone, so a migration is reversible
+    by deleting one file.
+
     Args:
         home: the sluice home; defaults to ``$SLUICE_HOME`` or ``~/.sluice``.
         config_path: override the config location; defaults to
-            ``<home>/config.json``.
+            ``<home>/config.toml``.
 
     Returns:
         The plan.
     """
     home = pathlib.Path(home).expanduser() if home else default_home()
     config_path = (
-        pathlib.Path(config_path).expanduser() if config_path else home / "config.json"
+        pathlib.Path(config_path).expanduser()
+        if config_path
+        else home / DEFAULT_CONFIG_FILENAME
     )
 
-    existing: dict = {}
     is_upgrade = config_path.is_file()
-    if is_upgrade:
+    migrated_from = None
+    if not is_upgrade and config_path.suffix == ".toml":
+        legacy = config_path.with_name(LEGACY_CONFIG_FILENAME)
+        if legacy.is_file():
+            migrated_from = legacy
+
+    existing: dict = {}
+    read_from = config_path if is_upgrade else migrated_from
+    if read_from is not None:
         try:
-            loaded = json.loads(config_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            existing = parse_config_text(
+                read_from.read_text(encoding="utf-8"),
+                str(read_from),
+                is_json=read_from.suffix == ".json",
+            )
+        except (OSError, ConfigError):
             # A corrupt config is treated as "nothing known yet" for planning, so
             # setup can still report what is needed. apply_plan refuses to write
             # over it (see below), so nothing is lost.
-            loaded = {}
-        if isinstance(loaded, dict):
-            existing = loaded
+            existing = {}
 
     added: dict = {}
     blank: dict = {}
@@ -185,6 +353,7 @@ def plan_setup(home=None, config_path=None) -> SetupPlan:
         added_blank=blank,
         needs_attention=tuple(needs_attention),
         unknown_keys=unknown,
+        migrated_from=migrated_from,
     )
 
 
@@ -198,13 +367,21 @@ def apply_plan(plan: SetupPlan, *, initialise_database=True) -> SetupResult:
             worst possible outcome.
         OSError: a directory or file could not be created.
     """
-    if plan.is_upgrade and not plan.existing:
-        # Distinguishes "empty JSON object" (fine) from "unparseable" (not).
+    source_path = plan.source_path
+    if source_path is not None and not plan.existing:
+        # Distinguishes "empty config" (fine) from "unparseable" (not). Checked
+        # against whichever file the values were read from, so a migration is
+        # refused on a broken config.json rather than starting the new TOML from
+        # an empty dict and calling the old values gone.
         try:
-            json.loads(plan.config_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as unreadable:
+            parse_config_text(
+                source_path.read_text(encoding="utf-8"),
+                str(source_path),
+                is_json=source_path.suffix == ".json",
+            )
+        except (OSError, ConfigError) as unreadable:
             raise ValueError(
-                f"{plan.config_path} exists but could not be parsed "
+                f"{source_path} exists but could not be parsed "
                 f"({unreadable}). Refusing to overwrite it — fix or move the file, "
                 "then run setup again."
             ) from unreadable
@@ -251,7 +428,7 @@ def apply_plan(plan: SetupPlan, *, initialise_database=True) -> SetupResult:
 
     plan.config_path.parent.mkdir(parents=True, exist_ok=True)
     plan.config_path.write_text(
-        json.dumps(merged, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        render_config_toml(merged, plan.unknown_keys), encoding="utf-8"
     )
     plan.config_path.chmod(0o600)
 

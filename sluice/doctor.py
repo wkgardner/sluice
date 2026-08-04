@@ -393,8 +393,17 @@ GATE_CONFIG_GROUPS: Mapping[str, tuple[str, ...]] = {
     "samplesheet": ("nvd",),
     # "storage" because resolve_launch_dir reads local_staging_dir to refuse a
     # launch base inside the staging tree (errata D2) — the drift guard caught
-    # that read, which is what it is for.
-    "nvd": ("nvd", "nvd reference data", "nvd analysis", "storage"),
+    # that read, which is what it is for. "labkey" for the same reason:
+    # build_webdav_url derives the upload URL from the experiments container
+    # rather than taking a config key of its own.
+    "nvd": (
+        "nvd",
+        "nvd reference data",
+        "nvd analysis",
+        "nvd labkey upload",
+        "storage",
+        "labkey",
+    ),
 }
 
 # Config groups that are not a gate's. `sluice state` is universal; `slack`
