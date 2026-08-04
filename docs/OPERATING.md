@@ -42,6 +42,23 @@ daemon notices on its next pass. This has three consequences worth internalising
 
 ## Installing and upgrading
 
+**First time on a machine**, from the sluice checkout:
+
+```bash
+./install.sh
+```
+
+This puts a `sluice` command on your PATH so every command in this guide works as written,
+from any directory. It needs no sudo, changes nothing outside `~/.local/bin`, and is safe to
+re-run. If it tells you `~/.local/bin` is not on your PATH, it prints the exact line to add
+to your shell profile.
+
+If you would rather not install anything, every command below also works as
+`pixi run sluice <command>` from inside the checkout, or from anywhere as
+`pixi run --manifest-path /path/to/sluice/pixi.toml sluice <command>`.
+
+**Then, and after every sluice release:**
+
 ```bash
 sluice setup
 ```
@@ -52,9 +69,126 @@ the empty files under `~/.sluice/secrets/`.
 
 **Run the same command again after every sluice release.** It adds keys the new version introduced
 and leaves everything you have already set completely alone — no value you tuned is ever
-overwritten, so you do not need to read a diff first. Use `--dry-run` to see what it would change.
+overwritten. Use `--dry-run` to see what it would change.
+
+Re-running against an existing config **asks first**, and copies the old file to
+`config.json.bak` before writing. Your values survive either way; the backup exists because the
+file is rewritten sorted and reformatted, so hand-arranged ordering does not — and neither do
+unsaved changes sitting in an editor that has the file open. **Close it in your editor before
+re-running.** Pass `--yes` to skip the question; in a script, setup refuses rather than rewriting
+unasked.
 
 If it reports keys "not used by this version", they are left in place untouched.
+
+---
+
+## Pointing sluice at your data
+
+sluice reads runs from one of two places: a **remote server over SSH** (normal operation)
+or a **local directory** (rehearsal, no credentials needed). It picks local mode whenever
+`local_source_dir` has a value, so leave that key empty for normal operation.
+
+### Remote
+
+```json
+"remote_user":        "<remote_user>",
+"remote_host":        "<remote_host>",
+"remote_source_path": "<remote_source_path>",
+"password_file":      "~/.sluice/secrets/remote_password"
+```
+
+The first three are yours to fill in — the real host, account and path live in your
+config, never in this guide.
+
+Two things about `remote_source_path` will cost you an evening if you get them wrong.
+
+**It must end with a slash.** Without one, `rsync` describes the folder instead of listing
+what is inside it, and sluice sees a single run named after your directory rather than the
+runs within it. Nothing adds the slash for you.
+
+**It must point at the folder that CONTAINS run directories** — not at a run, and not at a
+delivery folder inside a run. Given this on the server:
+
+```
+~/deliveries/                          <- remote_source_path points HERE
+   20251120_A01234_0001_RUNNAME/       <- this becomes the run
+      <delivery-folder>/
+         ..._001.fastq.gz
+         .verified-copy.sha256
+```
+
+set `remote_source_path` to `deliveries/`. The run is then
+`20251120_A01234_0001_RUNNAME`. Pointing it one level deeper at the delivery folder finds
+nothing, because the fastq files would be loose at the top level and a loose fastq is not
+a run.
+
+A relative path is relative to the SSH user's home directory. Other folders sitting beside
+yours on the server are harmless — see the filter below.
+
+### What sluice treats as a run
+
+A folder is picked up only if it contains **both**:
+
+- a checksum manifest — a file ending `md5s.txt` or `.sha256` (including hidden ones like
+  `.verified-copy.sha256`), and
+- at least one file ending `001.fastq.gz`.
+
+Anything else is ignored, which is why unrelated folders on the server do not matter. The
+files can sit at any depth inside the run folder — the delivery-folder layer above is
+found fine — and they are all counted toward that one run.
+
+If a folder you expect is not being picked up, it is almost always one of these two
+missing, or the trailing slash.
+
+### Local, for rehearsal
+
+```json
+"local_source_dir": "/path/to/a/folder/of/runs"
+```
+
+Same layout rules, same run-detection filter, no SSH and no credentials. Clear the key to
+go back to remote.
+
+---
+
+## Checking the installation
+
+```bash
+sluice doctor
+```
+
+`sluice setup` makes sure your config has every setting. `sluice doctor` makes
+sure those settings point at things that are really there — the directories
+exist, the credential files are filled in, the NVD repository is where you said.
+
+Run it after `sluice setup`, and any time something looks wrong.
+
+The first line of the report is the config file it read. If doctor keeps
+reporting something you have already fixed, check that line — you are almost
+certainly editing a different file from the one it is reading.
+
+Each line is one check:
+
+- **ok** — verified.
+- **warn** — sluice will run, but something should be fixed. A credential file
+  readable by other users, a working directory that is missing and will be
+  recreated, or an optional setting still holding the `<placeholder>` the
+  example config ships — that last one is passed through to the tool exactly as
+  written, so fill it in or clear the key.
+- **FAIL** — sluice cannot work until you fix it. Every failure names what to
+  change: usually a config setting, sometimes a command to run.
+- **skip** — the check does not apply to your setup. Settings for the source
+  mode you are not using are skipped, as are notification settings when Slack
+  is turned off.
+
+Doctor exits 0 unless something failed, so it is safe to put in a script.
+Warnings do not make it exit non-zero.
+
+**Doctor never changes anything.** It only reads — no config written, no
+directory created, no run state touched. (Reading the database can leave SQLite's
+own `-wal`/`-shm` files beside it, exactly as any read does; none of your data
+changes.) If it reports a problem, it tells you what to edit; it will not edit it
+for you.
 
 ---
 
@@ -66,7 +200,7 @@ After `sluice setup`, point `$SLUICE_CONFIG` at `~/.sluice/config.json` (or pass
 ### See everything
 
 ```bash
-sluice status          # or, from a checkout: pixi run sluice status
+sluice status
 ```
 
 ```
@@ -214,9 +348,19 @@ Most things can wait. These probably cannot:
 
 As of 2026-08-02 the pipeline runs: **experiment → download → checksum → samplesheet → nvd**.
 
-A run that passes all three is reported `complete`, and that is truthful — it is complete *under the
+A run that passes all five is reported `complete`, and that is truthful — it is complete *under the
 contract that exists today*. The Globus backup pair is deferred until Will returns; when it lands, runs simply continue further
 before completing. Nothing behind it changes, and nothing already done is redone.
+
+**The first gate talks to LabKey**, so a working LabKey configuration is required before any run
+gets past step one. `experiment` creates the run's LabKey experiment and records the experiment ID
+that everything downstream — including the staging directory name — is keyed on. A run with LabKey
+misconfigured quarantines immediately on its first look, with the reason naming LabKey.
+
+There is currently **no operator command to exclude a gate from a run.** The capability exists
+inside sluice and is audited, but it is not wired to the command line yet, so a pipeline stage
+cannot be skipped for a single run today. `sluice show <run>` will display exclusions if any exist.
+If you need one, that is a "get hold of Will" situation.
 
 **NVD runs take hours.** A run sitting on the `nvd` gate is normal, not stuck. To tell working from
 hung, look at the NVD log — its path is in the run's quarantine reason if it failed, and otherwise
