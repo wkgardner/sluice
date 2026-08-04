@@ -87,7 +87,13 @@ class SetupPlan:
     existing: dict
     # key -> value, for keys this run will add with a usable default.
     added_with_default: dict
+    # key -> "", for keys setup cannot supply a value for. Written anyway so the
+    # operator edits a value instead of transcribing a key name from a terminal
+    # into JSON — a mistyped key is silently absent, which is a worse failure
+    # than an empty one.
+    added_blank: dict
     # Fields that need a human: no value yet and no default setup can invent.
+    # A subset of `added_blank` — the required ones, which drive the report.
     needs_attention: tuple[ConfigField, ...]
     # Keys present in the config file that no longer appear in the schema.
     unknown_keys: tuple[str, ...]
@@ -95,7 +101,7 @@ class SetupPlan:
     @property
     def merged(self) -> dict:
         """The config this plan would write."""
-        return {**self.existing, **self.added_with_default}
+        return {**self.existing, **self.added_with_default, **self.added_blank}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -149,6 +155,7 @@ def plan_setup(home=None, config_path=None) -> SetupPlan:
             existing = loaded
 
     added: dict = {}
+    blank: dict = {}
     needs_attention: list[ConfigField] = []
     for field in CONFIG_FIELDS:
         if field.name in existing:
@@ -156,12 +163,15 @@ def plan_setup(home=None, config_path=None) -> SetupPlan:
         default = _default_for(field, home)
         if default is not None:
             added[field.name] = default
-        elif field.required:
+            continue
+        # No default, so a human has to supply it. Write the key anyway, empty:
+        # every key the operator must fill is then already in the file, in place,
+        # spelled correctly. The alternative — listing key names in the terminal
+        # and asking someone to type them into JSON — turns one typo into a key
+        # that is silently missing rather than visibly empty.
+        blank[field.name] = ""
+        if field.required:
             needs_attention.append(field)
-        else:
-            # Optional with no default: write it empty so the key is visible and
-            # discoverable rather than silently absent.
-            added[field.name] = ""
 
     known = {field.name for field in CONFIG_FIELDS}
     unknown = tuple(sorted(key for key in existing if key not in known))
@@ -172,6 +182,7 @@ def plan_setup(home=None, config_path=None) -> SetupPlan:
         is_upgrade=is_upgrade,
         existing=existing,
         added_with_default=added,
+        added_blank=blank,
         needs_attention=tuple(needs_attention),
         unknown_keys=unknown,
     )

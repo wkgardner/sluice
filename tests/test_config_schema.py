@@ -367,3 +367,30 @@ def test_the_example_config_matches_the_schema():
     example_keys = set(json.loads(example_path.read_text(encoding="utf-8")))
 
     assert example_keys == {field.name for field in CONFIG_FIELDS}
+
+
+def test_setup_writes_every_key_including_the_ones_it_cannot_fill(tmp_path):
+    """The written config contains EVERY schema key, not just the fillable ones.
+
+    Setup used to list operator-supplied keys in the terminal and leave them out
+    of the file, so getting an install running meant transcribing key names from
+    a scrollback into JSON by hand. A typo there produces a key that is silently
+    absent rather than visibly empty — and an absent key is the harder failure to
+    see, both for the operator and for `sluice doctor`.
+
+    Values are still never invented: the keys arrive empty, which is what the
+    report and doctor both key off.
+    """
+    home = tmp_path / "h"
+    apply_plan(plan_setup(home=home))
+
+    written = json.loads((home / "config.json").read_text(encoding="utf-8"))
+
+    missing = sorted({field.name for field in CONFIG_FIELDS} - set(written))
+    assert not missing, f"setup left these keys out of the config: {missing}"
+
+    # The keys a human must supply are present AND empty — present so they can be
+    # edited in place, empty so nothing mistakes a placeholder for a real value.
+    for field in CONFIG_FIELDS:
+        if field.required and field.default is None and field.home_relative is None:
+            assert written[field.name] == "", field.name
