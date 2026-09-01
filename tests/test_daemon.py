@@ -30,6 +30,10 @@ from sluice.core.daemon import (
     prepare_database,
     process_run,
     run_cycle,
+    DaemonHostError,
+    assert_daemon_host,
+    daemon_host_path,
+    record_daemon_host,
     run_forever,
 )
 from sluice.core.db import (
@@ -1795,3 +1799,114 @@ def test_an_empty_watch_dir_is_refused_rather_than_scanning_the_cwd():
 
     with pytest.raises(ValueError, match="refusing to scan the current directory"):
         watch_dir_lister({"watch_dir": "  "})
+
+
+# ---------------------------------------------------------------------------
+# The cross-host guard (shared-operations increment).
+# ---------------------------------------------------------------------------
+
+
+def test_the_recorded_host_lives_beside_the_db_not_inside_it(config):
+    """The daemon's host is written to a sibling file, never to poller_metadata.
+
+    The guard's whole job is to stop a second machine opening this database, so
+    reading it must not require opening the database. ``poller_metadata`` was the
+    obvious home and is the wrong one: a metadata read on the wrong host creates
+    the WAL ``-shm`` segment, which is the exact act being prevented.
+    """
+    state_file = pathlib.Path(config["state_file"])
+
+    record_daemon_host(str(state_file), "submit1")
+
+    assert daemon_host_path(str(state_file)) == state_file.with_name(
+        state_file.name + ".host"
+    )
+    assert daemon_host_path(str(state_file)).read_text(encoding="utf-8") == "submit1"
+
+
+def test_the_guard_passes_on_the_recorded_host(config):
+    """The ordinary case: the operator is where the daemon is, so nothing happens."""
+    record_daemon_host(str(config["state_file"]), "submit1")
+
+    assert_daemon_host(str(config["state_file"]), "submit1")
+
+
+def test_the_guard_refuses_from_another_host_and_names_the_right_one(config):
+    """A command from the wrong node is refused with the host to go to.
+
+    THE failure this exists for. The DB is on a networked home, so a second
+    machine opening it is cross-host network-FS locking — silent corruption that
+    takes the run history with it (design §5). An error naming ``submit1`` turns
+    that into an instruction.
+    """
+    record_daemon_host(str(config["state_file"]), "submit1")
+
+    with pytest.raises(DaemonHostError) as raised:
+        assert_daemon_host(str(config["state_file"]), "submit2")
+
+    assert "submit1" in str(raised.value)
+    assert "submit2" in str(raised.value)
+
+
+def test_the_guard_allows_a_db_no_daemon_has_claimed(config):
+    """No recorded host means no pin yet — setup and first use must still work.
+
+    The pin arrives with the daemon. Refusing before then would make a fresh
+    install unusable by the person setting it up.
+    """
+    assert_daemon_host(str(config["state_file"]), "anywhere")
+
+
+def test_the_guard_reads_no_sqlite_at_all(config):
+    """The refusal happens even when the state file is not a database.
+
+    Pins the property the design depends on: the guard must run *before*
+    anything touches the DB, so it cannot be reading the DB to decide. A state
+    file full of garbage still produces a clean host refusal rather than a
+    SQLite error.
+    """
+    state_file = pathlib.Path(config["state_file"])
+    state_file.write_text("not a database", encoding="utf-8")
+    record_daemon_host(str(state_file), "submit1")
+
+    with pytest.raises(DaemonHostError):
+        assert_daemon_host(str(state_file), "submit2")
+
+
+def test_run_forever_claims_the_host_it_starts_on(config):
+    """Starting the daemon pins the DB to this machine.
+
+    Written at startup rather than once at install: moving the daemon to another
+    node is a legitimate operation, and the next start should re-pin rather than
+    require someone to remember a file.
+    """
+    _make_folder(config, "run1")
+
+    run_forever(
+        config,
+        registry=REFERENCE_PROFILES,
+        default_pipeline_version=DEFAULT_VERSION,
+        max_cycles=1,
+        hostname="submit1",
+    )
+
+    assert daemon_host_path(str(config["state_file"])).read_text() == "submit1"
+
+
+def test_a_second_daemon_on_another_host_is_refused(config):
+    """Two daemons on two nodes is the gap ``fcntl.flock`` structurally cannot close.
+
+    flock is per-machine: a second daemon on another node takes its own lock and
+    both run against one database. The host claim is what actually enforces
+    single-instance on a cluster, so a daemon starting on the wrong node refuses.
+    """
+    record_daemon_host(str(config["state_file"]), "submit1")
+
+    with pytest.raises(DaemonHostError):
+        run_forever(
+            config,
+            registry=REFERENCE_PROFILES,
+            default_pipeline_version=DEFAULT_VERSION,
+            max_cycles=1,
+            hostname="submit2",
+        )

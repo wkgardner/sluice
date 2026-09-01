@@ -54,14 +54,19 @@ from sluice.core.profile import (
 from sluice.core.reconcile import is_complete, next_gate
 
 __all__ = [
+    "DaemonHostError",
     "DaemonLockError",
     "acquire_daemon_lock",
     "assemble_registry",
+    "assert_daemon_host",
     "configure_logging",
+    "daemon_host_path",
     "detect_new_runs",
     "install_signal_handlers",
     "prepare_database",
     "process_run",
+    "read_daemon_host",
+    "record_daemon_host",
     "run_cycle",
     "run_forever",
     "watch_dir_lister",
@@ -76,10 +81,89 @@ log = structlog.get_logger("sluice.daemon")
 class DaemonLockError(RuntimeError):
     """A second sluice daemon tried to run against a lock another instance holds.
 
-    Single-instance is the ``fcntl.flock`` alone (§5; the A3 lesson — no
-    per-run ``locked_at`` mutex, no stale-lock reaper). Raised loud so a
-    double start dies visibly rather than two daemons racing the same DB.
+    Single-instance **on one host** is the ``fcntl.flock`` alone (§5; the A3
+    lesson — no per-run ``locked_at`` mutex, no stale-lock reaper). Raised loud
+    so a double start dies visibly rather than two daemons racing the same DB.
+
+    It cannot see across machines; ``DaemonHostError`` covers that half.
     """
+
+
+class DaemonHostError(RuntimeError):
+    """The database is claimed by a different machine than this one.
+
+    Design §5's single-host invariant says the DB "is only ever opened from the
+    one host the daemon and operators share", because "corruption comes from
+    cross-host network-FS locking". On a cluster whose home directories are
+    shared, nothing enforced that — a colleague on another login node running
+    any sluice command became a second NFS client on a WAL database.
+
+    Raised on both sides of the same rule: an operator command from the wrong
+    node, and a *second daemon* on another node — which ``fcntl.flock``
+    structurally cannot catch, since each machine has its own lock table.
+    """
+
+
+def daemon_host_path(state_file) -> pathlib.Path:
+    """The sibling file recording which machine claims this database.
+
+    Beside the DB, exactly like the lock file, and for the same reason: it must
+    be readable **before** anything opens the database. ``poller_metadata`` is
+    the obvious home and the wrong one — reading a metadata row means opening
+    SQLite, which creates the WAL ``-shm`` segment, which is precisely the
+    cross-host act the claim exists to prevent. A plain text file costs one
+    ``read_text`` and touches nothing.
+    """
+    state_file = pathlib.Path(state_file)
+    return state_file.with_name(state_file.name + ".host")
+
+
+def record_daemon_host(state_file, hostname: str) -> None:
+    """Claim this database for ``hostname``, replacing any previous claim.
+
+    Written at every daemon start rather than once at install: moving the daemon
+    to another node is a legitimate operation, and the next start should re-pin
+    by itself rather than depending on someone remembering a file.
+    """
+    host_path = daemon_host_path(state_file)
+    host_path.parent.mkdir(parents=True, exist_ok=True)
+    host_path.write_text(hostname, encoding="utf-8")
+
+
+def read_daemon_host(state_file) -> str | None:
+    """The machine currently claiming this database, or ``None`` if unclaimed."""
+    try:
+        recorded = daemon_host_path(state_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return recorded or None
+
+
+def assert_daemon_host(state_file, current_host: str) -> None:
+    """Refuse to touch ``state_file`` from a machine that does not own it.
+
+    An **unclaimed** database is allowed from anywhere: the claim arrives with
+    the daemon, and refusing before then would make a fresh install unusable by
+    the person setting it up.
+
+    Args:
+        state_file: the configured ``state_file`` path.
+        current_host: this machine's name, supplied by the caller. Passed in
+            rather than read here so this module needs no ``socket`` import and
+            a test can name a host without pretending to be one.
+
+    Raises:
+        DaemonHostError: another machine claims this database.
+    """
+    recorded = read_daemon_host(state_file)
+    if recorded is None or recorded == current_host:
+        return
+    raise DaemonHostError(
+        f"this sluice database belongs to {recorded!r} and you are on "
+        f"{current_host!r}. Its state file is on shared storage, so opening it "
+        f"from a second machine risks corrupting it (design §5). Run this on "
+        f"{recorded!r} instead."
+    )
 
 
 def acquire_daemon_lock(lock_path):
@@ -741,6 +825,7 @@ def run_forever(
     disk_floor_check: Callable[[Mapping], str | None] | None = None,
     lister=None,
     max_cycles: int | None = None,
+    hostname: str | None = None,
 ) -> None:
     """Take the lock, prepare state, then run cycles until shutdown or ``max_cycles``.
 
@@ -763,18 +848,36 @@ def run_forever(
         lister: optional detection-source seam passed through each ``run_cycle``
             (``None`` = the watch-dir default).
         max_cycles: run at most this many cycles then stop (``None`` = forever).
+        hostname: this machine's name, used to claim the database. Supplied by
+            the caller rather than read here, so this module needs no ``socket``
+            import and its closed set (§3.11) stays closed. ``None`` skips both
+            the check and the claim — for a caller that has no host to offer.
 
     Raises:
         KeyError: ``config`` lacks ``poll_interval_minutes`` or ``state_file``
             (fail-loud before the lock is taken).
+        DaemonHostError: another machine claims this database (before the lock,
+            and before the DB — a second daemon across nodes is the gap the
+            flock cannot see).
         DaemonLockError: another instance holds the lock (before the DB).
     """
     # Fail loud on missing config BEFORE any side effect (unit 6).
     poll_interval_minutes = config["poll_interval_minutes"]
-    lock_path = str(config["state_file"]) + ".lock"
+    state_file = str(config["state_file"])
+    lock_path = state_file + ".lock"
+
+    # Ordered before the lock deliberately: the flock is per-machine, so on the
+    # wrong node it would succeed and tell us nothing. The host claim is the
+    # only check that can refuse a second daemon on a second machine.
+    if hostname is not None:
+        assert_daemon_host(state_file, hostname)
 
     lock_handle = acquire_daemon_lock(lock_path)
     try:
+        # Claimed after the lock, so a refused second instance on THIS host
+        # never rewrites a claim it does not hold.
+        if hostname is not None:
+            record_daemon_host(state_file, hostname)
         prepare_database(
             config,
             registry=registry,

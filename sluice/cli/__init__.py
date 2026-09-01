@@ -49,15 +49,22 @@ on stdout would corrupt the JSON.
 
 ## Attribution
 
-Every state-changing op writes an audit row naming an **actor**, defaulting to the OS user and
-overridable with ``--actor``. There is no anonymous path: the audit trail is the only record of who
-did what, and an unattributed row is worthless evidence.
+Every state-changing op writes an audit row naming an **actor**: the OS user, and nothing else.
+There is no anonymous path and no way to choose a name — the audit trail is the only record of who
+did what, and a row naming whoever the caller *said* they were is worse than no row, because it
+reads as authoritative.
+
+``--actor`` used to accept an arbitrary string. That was harmless while one person could write to
+the database; it became fake evidence the moment a shared installation let several people write.
+The flag is gone rather than ignored, so a script still passing it fails loudly instead of
+recording something other than what it says.
 """
 
 import contextlib
 import dataclasses
 import getpass
 import json
+import socket
 import sys
 
 import structlog
@@ -69,7 +76,12 @@ from rich.text import Text
 from sluice.config import ConfigError, load_config, resolve_config_path
 from sluice.config.setup import apply_plan, plan_setup
 from sluice.core import control
-from sluice.core.daemon import assemble_registry, run_forever
+from sluice.core.daemon import (
+    DaemonHostError,
+    assemble_registry,
+    assert_daemon_host,
+    run_forever,
+)
 from sluice.core.profile import REFERENCE_PROFILES
 from sluice.doctor import Severity, run_doctor, worst
 from sluice.gates.detection import list_remote_runs
@@ -110,7 +122,6 @@ class Settings:
     """The global options, resolved once and carried on the Click context."""
 
     config: str | None
-    actor: str
     as_json: bool
 
 
@@ -145,16 +156,34 @@ def _registry():
     return assemble_registry(REFERENCE_PROFILES, PRODUCTION_PROFILES)
 
 
-def _default_actor() -> str:
-    """The OS user, for the audit trail.
+def _current_actor() -> str:
+    """The OS user, for the audit trail. Not overridable, by design.
 
-    Falls back to ``"unknown"`` only if the OS cannot say, which the audit writer
-    then rejects loudly rather than writing an unattributed row.
+    An OS that cannot name its own user is a refusal, not a fallback. The old
+    ``"unknown"`` placeholder was exactly the unattributed row the design calls
+    worthless evidence — and worse than refusing, because a command that
+    succeeded looks like one that was accounted for.
+
+    Raises:
+        ConfigError: the OS cannot name the current user. Reusing that type
+            keeps this on the ``_guard`` path, so it exits with a sentence
+            rather than a traceback.
     """
     try:
-        return getpass.getuser()
-    except Exception:
-        return "unknown"
+        user = getpass.getuser()
+    except Exception as no_user:
+        raise ConfigError(
+            "cannot determine the current OS user, so this action could not be "
+            "attributed to anyone. sluice refuses to write an unattributed "
+            "audit row."
+        ) from no_user
+    if not user.strip():
+        raise ConfigError(
+            "the current OS user is empty, so this action could not be "
+            "attributed to anyone. sluice refuses to write an unattributed "
+            "audit row."
+        )
+    return user
 
 
 @contextlib.contextmanager
@@ -173,6 +202,11 @@ def _guard():
         yield
     except ConfigError as config_error:
         _err.print(f"[red]sluice:[/red] {config_error}")
+        raise typer.Exit(EXIT_REFUSED) from None
+    except DaemonHostError as wrong_host:
+        # Not a bug and not a refusal by the control layer — the operator is
+        # simply standing on the wrong machine, and the message says which.
+        _err.print(f"[red]sluice:[/red] {wrong_host}")
         raise typer.Exit(EXIT_REFUSED) from None
     except control.UnknownRunError as unknown_run:
         _err.print(f"[red]sluice:[/red] {unknown_run}")
@@ -194,8 +228,21 @@ def _settings(context: typer.Context) -> Settings:
 
 
 def _state_file(settings: Settings) -> str:
-    """The database path from config, or a clear failure naming what is missing."""
-    return load_config(settings.config)["state_file"]
+    """The database path from config, guarded against use from the wrong machine.
+
+    Every command that touches the database comes through here, which is why the
+    cross-host check lives here rather than in each op: one choke point cannot be
+    forgotten by the next command someone adds.
+
+    It runs *before* the path is handed to anything that would open it. That
+    ordering is the whole point — on a cluster the state file sits on shared
+    storage, and a second machine opening a WAL database is the corruption case
+    design §5 forbids. Reading the claim costs one ``read_text`` of a sibling
+    file and touches no SQLite.
+    """
+    state_file = load_config(settings.config)["state_file"]
+    assert_daemon_host(state_file, socket.gethostname())
+    return state_file
 
 
 def _emit_json(payload) -> None:
@@ -231,17 +278,15 @@ def _global_options(
     config: str = typer.Option(
         None, "--config", "-c", help="Path to config.toml.", metavar="PATH"
     ),
-    actor: str = typer.Option(
-        None, "--actor", help="Who to record in the audit trail.", metavar="NAME"
-    ),
     as_json: bool = typer.Option(
         False, "--json", help="Emit machine-readable JSON instead of a table."
     ),
 ) -> None:
     """Resolve the options every command shares."""
-    context.obj = Settings(
-        config=config, actor=actor or _default_actor(), as_json=as_json
-    )
+    # The actor is resolved lazily by `_call_op`, not here: `status` and
+    # `doctor` need no attribution, and refusing them because the OS cannot name
+    # a user would break the two commands you most want during an outage.
+    context.obj = Settings(config=config, as_json=as_json)
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +562,7 @@ def _call_op(settings: Settings, operation, *positional, **keyword) -> None:
     """
     with _guard():
         result = operation(
-            _state_file(settings), settings.actor, *positional, **keyword
+            _state_file(settings), _current_actor(), *positional, **keyword
         )
     if settings.as_json:
         _emit_json(
@@ -652,6 +697,9 @@ def daemon(
             lister=list_remote_runs,
             notifier=notifier,
             max_cycles=1 if once else None,
+            # The composition root supplies the host: core stays socket-free,
+            # and starting here is what claims the DB for this machine.
+            hostname=socket.gethostname(),
         )
 
 
@@ -665,6 +713,12 @@ def setup(
     ),
     assume_yes: bool = typer.Option(
         False, "--yes", "-y", help="Do not ask before rewriting an existing config."
+    ),
+    shared_group: str = typer.Option(
+        None,
+        "--shared-group",
+        help="Let this Unix group operate sluice too. Credentials stay yours.",
+        metavar="GROUP",
     ),
 ) -> None:
     """Create or upgrade this installation — safe to re-run after every release.
@@ -684,6 +738,16 @@ def setup(
     An install still on the older [cyan]config.json[/cyan] is migrated on the
     next run: your values move into [cyan]config.toml[/cyan] and the JSON is
     left exactly where it is.
+
+    [bold]--shared-group GROUP[/bold] lets everyone in that Unix group run
+    sluice against this installation — they can see state, hold, and clear
+    errors. It widens the config and the state directory only;
+    [cyan]secrets/[/cyan] stays yours alone, because operating sluice never
+    needs the credentials the daemon uses.
+
+    Everyone must run from the machine the daemon is on. sluice enforces that
+    rather than trusting it: the state file is claimed by whichever host the
+    daemon starts on, and commands from anywhere else are refused.
     """
     plan = plan_setup(home=home)
 
@@ -775,7 +839,7 @@ def setup(
 
     with _guard():
         try:
-            result = apply_plan(plan)
+            result = apply_plan(plan, shared_group=shared_group)
         except (ValueError, OSError) as setup_failure:
             _err.print(f"[red]sluice setup:[/red] {setup_failure}")
             raise typer.Exit(EXIT_REFUSED) from None
@@ -783,6 +847,12 @@ def setup(
     if backup_path is not None:
         _out.print(f"\n[dim]Previous config saved to {backup_path}[/dim]")
     _out.print(f"\n[green]Wrote[/green] {plan.config_path}")
+    if shared_group:
+        _out.print(
+            f"[green]Shared[/green] with the [cyan]{shared_group}[/cyan] group — "
+            "they can operate sluice from this machine. "
+            "[dim]secrets/ is unchanged and still yours only.[/dim]"
+        )
     if result.database_initialised:
         _out.print("[green]Database[/green] migrated to the current schema.")
     if result.created_secret_placeholders:

@@ -543,3 +543,77 @@ def test_setup_writes_every_key_including_the_ones_it_cannot_fill(tmp_path):
     for field in CONFIG_FIELDS:
         if field.required and field.default is None and field.home_relative is None:
             assert written[field.name] == "", field.name
+
+
+# ---------------------------------------------------------------------------
+# Shared-operations mode.
+# ---------------------------------------------------------------------------
+
+
+def _a_group_this_user_belongs_to():
+    """The NAME of a real group the test user is in, or None if there is none.
+
+    A name, not a gid: setup takes what an operator would type after
+    ``--shared-group``, and resolving it is part of what is being tested.
+    """
+    import grp
+    import os
+
+    for gid in os.getgroups():
+        try:
+            return grp.getgrgid(gid).gr_name
+        except KeyError:
+            continue
+    return None
+
+
+def test_shared_mode_opens_the_config_and_state_to_the_group(tmp_path):
+    """The two things a second operator needs, and nothing more.
+
+    They must read the config (to find the database at all) and write the state
+    directory (SQLite creates -wal/-shm beside the file). Secrets are the point
+    of the exercise: someone running `hold` never needs the rsync password, so
+    widening the config must not widen those.
+    """
+    import stat
+
+    group = _a_group_this_user_belongs_to()
+    if group is None:
+        pytest.skip("no supplementary group available to test with")
+    home = tmp_path / "h"
+
+    apply_plan(plan_setup(home=home), shared_group=group)
+
+    def mode(path):
+        return stat.S_IMODE(path.stat().st_mode)
+
+    assert mode(home / "config.toml") == 0o640, "the group must be able to read it"
+    state_dir = home / "state"
+    assert mode(state_dir) & 0o070 == 0o070, "the group must be able to write here"
+    assert mode(state_dir) & stat.S_ISGID, (
+        "setgid, or SQLite's -wal and -shm files are created owned by whoever "
+        "ran the command and the next operator cannot write them"
+    )
+    assert mode(home / "secrets") == 0o700, "credentials stay owner-only"
+
+
+def test_the_default_install_stays_owner_only(tmp_path):
+    """Without the flag nothing widens — a single-user install is the default."""
+    import stat
+
+    home = tmp_path / "h"
+
+    apply_plan(plan_setup(home=home))
+
+    assert stat.S_IMODE((home / "config.toml").stat().st_mode) == 0o600
+    assert stat.S_IMODE((home / "secrets").stat().st_mode) == 0o700
+
+
+def test_an_unusable_group_is_refused_with_a_clear_message(tmp_path):
+    """A group that does not exist fails as a sentence, not a traceback.
+
+    Getting the group wrong is the likeliest mistake here, and it happens on a
+    cluster where the operator may not know which groups they are in.
+    """
+    with pytest.raises(ValueError, match="no-such-group"):
+        apply_plan(plan_setup(home=tmp_path / "h"), shared_group="no-such-group")
