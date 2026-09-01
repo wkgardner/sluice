@@ -6,8 +6,10 @@ a thin layer, and testing it through anything but its actual entry point would t
 thing.
 """
 
+import getpass
 import hashlib
 import json
+import socket
 
 import pytest
 
@@ -22,7 +24,7 @@ from sluice.config import (
 )
 from sluice.config.setup import plan_setup, render_config_toml
 from sluice.config.schema import CONFIG_FIELDS
-from sluice.core.daemon import assemble_registry
+from sluice.core.daemon import assemble_registry, record_daemon_host
 from sluice.core.db import initialize_database, insert_run, update_run, write_txn
 from sluice.core.profile import REFERENCE_PROFILES
 from sluice.doctor import Severity, run_doctor
@@ -266,26 +268,34 @@ def test_every_state_change_reports_its_audit_id(deployment, capsys):
     assert "audited as #" in capsys.readouterr().out
 
 
-def test_the_actor_defaults_to_the_os_user_and_is_overridable(deployment, capsys):
-    """``--actor`` names who acted; the audit row records it.
+def test_the_actor_is_the_os_user_and_cannot_be_chosen(deployment, capsys):
+    """The audit row names whoever is logged in, and nothing can override it.
 
-    There is no anonymous path — an unattributed audit row is worthless evidence.
+    ``--actor`` used to accept any string. That was harmless while one person
+    could write to the database and became fake evidence the moment several
+    could: a trail recording who *claimed* to act is worse than no trail, since
+    it reads as authoritative. The OS user is the one identity the CLI does not
+    have to take anyone's word for.
     """
     add_run(deployment.state_file, "SEQ_008")
 
-    main(
-        [
-            "--config",
-            str(deployment.config_path),
-            "--actor",
-            "night-shift",
-            "--json",
-            "hold",
-            "SEQ_008",
-        ]
+    main(["--config", str(deployment.config_path), "--json", "hold", "SEQ_008"])
+
+    assert json.loads(capsys.readouterr().out)["actor"] == getpass.getuser()
+
+
+def test_the_actor_flag_is_gone_rather_than_quietly_ignored(deployment, capsys):
+    """``--actor`` is a usage error now, not a silently discarded option.
+
+    Accepting and ignoring it would let an existing script keep running while
+    recording something other than what it names — the failure mode this change
+    exists to remove, reintroduced as a surprise.
+    """
+    exit_code = main(
+        ["--config", str(deployment.config_path), "--actor", "someone", "hold", "X"]
     )
 
-    assert json.loads(capsys.readouterr().out)["actor"] == "night-shift"
+    assert exit_code == 2
 
 
 def test_an_unknown_run_exits_nonzero_with_a_clear_message(deployment, capsys):
@@ -696,3 +706,58 @@ def test_doctor_puts_failures_at_the_bottom(deployment, capsys):
     )
 
     assert first_fail > last_ok, "a passing check was rendered below a failure"
+
+
+# ---------------------------------------------------------------------------
+# The cross-host guard.
+# ---------------------------------------------------------------------------
+
+
+def test_a_command_from_the_wrong_host_is_refused(deployment, capsys, monkeypatch):
+    """Every DB-touching command refuses from a node the daemon does not own.
+
+    The state file lives on shared storage on a cluster, so a colleague running
+    this from another login node would be a second NFS client on a WAL database
+    — silent corruption, taking the run history with it (design §5). The refusal
+    names the host to go to, because "wrong host" without "which host" leaves
+    someone guessing across a dozen login nodes.
+    """
+    record_daemon_host(deployment.state_file, "submit1")
+    monkeypatch.setattr(socket, "gethostname", lambda: "submit2")
+
+    exit_code = main(["--config", str(deployment.config_path), "status"])
+
+    assert exit_code == 1
+    error_output = capsys.readouterr().err
+    assert "submit1" in error_output
+
+
+def test_a_control_write_from_the_wrong_host_is_refused(
+    deployment, capsys, monkeypatch
+):
+    """The guard covers writes, not just reads — the case that corrupts."""
+    add_run(deployment.state_file, "SEQ_001")
+    record_daemon_host(deployment.state_file, "submit1")
+    monkeypatch.setattr(socket, "gethostname", lambda: "submit2")
+
+    exit_code = main(["--config", str(deployment.config_path), "hold", "SEQ_001"])
+
+    assert exit_code == 1
+    assert "submit1" in capsys.readouterr().err
+
+
+def test_commands_work_normally_on_the_claimed_host(deployment, capsys, monkeypatch):
+    """The ordinary case is untouched: right host, no interference."""
+    record_daemon_host(deployment.state_file, "submit1")
+    monkeypatch.setattr(socket, "gethostname", lambda: "submit1")
+
+    exit_code = main(["--config", str(deployment.config_path), "status"])
+
+    assert exit_code == 0
+
+
+def test_an_unclaimed_database_is_usable_from_anywhere(deployment, capsys, monkeypatch):
+    """Before any daemon has run, nothing is pinned and setup must still work."""
+    monkeypatch.setattr(socket, "gethostname", lambda: "whatever")
+
+    assert main(["--config", str(deployment.config_path), "status"]) == 0

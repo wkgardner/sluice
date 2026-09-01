@@ -207,6 +207,51 @@ for you.
 
 ---
 
+## Letting other people operate sluice
+
+By default an installation belongs to one person: the config and credentials are
+readable only by whoever ran `sluice setup`. To let a team operate it:
+
+```bash
+sluice setup --shared-group sluice-ops
+```
+
+Everyone in that Unix group can then see run state, hold, unhold, skip and clear
+errors. **Your credentials are not shared** — `secrets/` stays yours alone, because
+operating sluice never needs the passwords the daemon uses. Only the config and the
+state directory are widened.
+
+### Everyone must run from the machine the daemon is on
+
+This is not a convention, it is enforced. The state database is claimed by whichever
+host the daemon starts on, and a command from any other machine is refused:
+
+```
+sluice: this sluice database belongs to 'submit1' and you are on 'submit2'.
+```
+
+The reason is worth knowing, because the failure it prevents is silent. The database
+lives on your shared home directory, and SQLite databases corrupt when two different
+machines open them at once. There is no error when it happens — you find out later,
+when the run history is gone. So sluice refuses instead, and tells you where to go.
+
+The same check stops a second daemon starting on a second node, which the normal
+single-instance lock cannot see (that lock only works within one machine).
+
+If you move the daemon to a different host, just start it there; the next start
+re-claims the database, and everyone follows it.
+
+### Who did what
+
+Every state change records the OS user who made it, and there is no way to record
+anything else. `sluice audit`-style questions are answered from that trail, so it
+has to be a name nobody could have chosen for themselves.
+
+If you have scripts passing `--actor`, that flag is gone and they will fail loudly
+rather than quietly recording the wrong person.
+
+---
+
 ## Everyday commands
 
 All commands take `--config PATH`, or read `$SLUICE_CONFIG`, or fall back to `./config.toml`.

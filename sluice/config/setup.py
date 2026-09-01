@@ -50,6 +50,8 @@ one file.
 """
 
 import dataclasses
+import grp
+import os
 import pathlib
 import textwrap
 
@@ -357,16 +359,74 @@ def plan_setup(home=None, config_path=None) -> SetupPlan:
     )
 
 
-def apply_plan(plan: SetupPlan, *, initialise_database=True) -> SetupResult:
+def _resolve_group(group_name: str) -> int:
+    """The gid for ``group_name``, or a ValueError an operator can act on.
+
+    Naming the wrong group is the likeliest mistake here — on a cluster the
+    operator often does not know which groups they are in — so the message says
+    what was tried and how to find out, rather than surfacing a bare KeyError.
+    """
+    try:
+        return grp.getgrnam(group_name).gr_gid
+    except KeyError as unknown_group:
+        raise ValueError(
+            f"no group named {group_name!r} exists on this machine. Check the "
+            "name with `groups`, and note that you must be a member of it "
+            "yourself to hand files to it."
+        ) from unknown_group
+
+
+def _share_with_group(path: pathlib.Path, gid: int, mode: int) -> None:
+    """Hand one path to ``gid`` at ``mode``, or explain why it could not be."""
+    try:
+        os.chown(path, -1, gid)
+        path.chmod(mode)
+    except OSError as refused:
+        raise ValueError(
+            f"could not hand {path} to the shared group ({refused}). You must "
+            "own the file and be a member of the group."
+        ) from refused
+
+
+def apply_plan(
+    plan: SetupPlan, *, initialise_database=True, shared_group=None
+) -> SetupResult:
     """Create the directories, write the config, and migrate the database.
 
+    ## Shared-operations mode
+
+    ``shared_group`` widens exactly two things so a second operator can run
+    ``status``, ``hold`` and the rest: the **config**, which they must read to
+    find the database at all, and the **state directory**, which they must write
+    because SQLite creates ``-wal``/``-shm`` beside the database file.
+
+    The state directory gets **setgid**. Without it those two files are created
+    owned by whoever ran the command that made them, and the next operator
+    cannot write them — an install that works for one person at a time and
+    fails on the second, intermittently.
+
+    **Secrets are deliberately not widened.** Someone clearing a quarantine
+    never needs the rsync password or the LabKey key; only the daemon does. That
+    asymmetry is the whole reason this is a safe thing to do.
+
+    Args:
+        plan: the plan to apply.
+        initialise_database: run migrations after writing the config.
+        shared_group: group name to share the config and state with. ``None``
+            leaves everything owner-only, which stays the default — a
+            single-user install should not opt into anything.
+
     Raises:
-        ValueError: the existing config file could not be parsed. Setup refuses to
+        ValueError: the existing config file could not be parsed (setup refuses to
             overwrite a file it could not read — the operator's values might still
             be in there, and clobbering them to "fix" a syntax error would be the
-            worst possible outcome.
+            worst possible outcome), or ``shared_group`` does not exist or cannot
+            be handed the files.
         OSError: a directory or file could not be created.
     """
+    # Resolved before anything is written: a typo'd group should fail while the
+    # install is still untouched, not half-way through changing its modes.
+    shared_gid = _resolve_group(shared_group) if shared_group else None
     source_path = plan.source_path
     if source_path is not None and not plan.existing:
         # Distinguishes "empty config" (fine) from "unparseable" (not). Checked
@@ -431,6 +491,13 @@ def apply_plan(plan: SetupPlan, *, initialise_database=True) -> SetupResult:
         render_config_toml(merged, plan.unknown_keys), encoding="utf-8"
     )
     plan.config_path.chmod(0o600)
+    if shared_gid is not None:
+        _share_with_group(plan.config_path, shared_gid, 0o640)
+        for relative in ("", "state", "logs", "logs/runs", "logs/nvd"):
+            directory = plan.home / relative if relative else plan.home
+            _share_with_group(
+                directory, shared_gid, 0o2770 if relative == "state" else 0o2750
+            )
 
     database_initialised = False
     state_file = merged.get("state_file")
