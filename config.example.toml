@@ -40,10 +40,10 @@ remote_user = "<remote_user>"
 # Hostname of the sequencing server.
 remote_host = "<remote_host>"
 
-# Path on the sequencing server holding run directories. MUST END WITH A
-# SLASH, and must point at the folder CONTAINING the run directories, not at a
-# run or a delivery inside one. Relative paths are relative to the SSH user's
-# home.
+# Path on the sequencing server holding run directories. Must point at the
+# folder CONTAINING the run directories, not at a run or a delivery inside one.
+# A trailing slash is added for you if you leave it off. Relative paths are
+# relative to the SSH user's home.
 remote_source_path = "<remote_source_path>"
 
 # File containing the SSH password. Never stored in config itself.
