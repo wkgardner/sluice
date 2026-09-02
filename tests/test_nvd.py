@@ -34,6 +34,18 @@ NVD_PARAMS = {
     "nvd_tax_stringency": 0.7,
     "nvd_max_blast_targets": 100,
     "nvd_dedup": True,
+    "nvd_trim_adapters": True,
+    # LabKey upload targets — where NVD puts its own results.
+    "nvd_labkey": True,
+    "nvd_labkey_server": "labkey.example.org",
+    "nvd_labkey_project_name": "proj/uploads",
+    "nvd_labkey_schema": "lists",
+    "nvd_labkey_blast_fasta_list": "example_fasta_list",
+    "nvd_labkey_blast_meta_hits_list": "example_meta_list",
+    "nvd_labkey_exp_id_guard_list": "example_guard_list",
+    # The WebDAV destination is derived from these two, not configured directly.
+    "labkey_server": "labkey.example.org",
+    "labkey_experiments_project": "/proj/experiments",
 }
 
 
@@ -159,6 +171,74 @@ def test_params_yaml_carries_the_run_specific_values(tmp_path):
     assert "samplesheet.csv" in rendered
     assert "/results/4471/nvd-results" in rendered
     assert "/results/4471/nvd-work" in rendered
+
+
+def test_params_yaml_carries_the_labkey_upload_targets():
+    """The lists NVD uploads its own results into are all named in the params.
+
+    Omitting them does not disable the upload — NVD falls back to the production
+    defaults compiled into its own repo and uploads there. So a dropped param is
+    worse than a wrong one: sluice stays clean while real results land in the
+    real lists. Every target is therefore emitted explicitly.
+    """
+    rendered = build_params_yaml(NVD_PARAMS, 4471, "/staging/4471/samplesheet.csv")
+
+    assert "labkey: true" in rendered
+    assert 'labkey_server: "labkey.example.org"' in rendered
+    assert 'labkey_project_name: "proj/uploads"' in rendered
+    assert 'labkey_schema: "lists"' in rendered
+    assert 'labkey_blast_fasta_list: "example_fasta_list"' in rendered
+    assert 'labkey_blast_meta_hits_list: "example_meta_list"' in rendered
+    assert 'labkey_exp_id_guard_list: "example_guard_list"' in rendered
+    assert "trim_adapters: true" in rendered
+
+
+def test_the_webdav_destination_is_derived_from_the_experiments_container():
+    """``labkey_webdav`` is built per experiment, never configured as its own key.
+
+    It is one URL assembled from three things sluice already knows, so a separate
+    config key would be a fourth place for the same host to be written down and
+    the first place for it to disagree. Production hardcoded the whole URL
+    (``nvd_helpers.py:70``); the container here is the *experiments* project, not
+    the upload project, because the files ride along with the experiment.
+    """
+    rendered = build_params_yaml(NVD_PARAMS, 4471, "/staging/4471/samplesheet.csv")
+
+    assert (
+        "labkey_webdav: https://labkey.example.org/_webdav/proj/experiments"
+        "/4471/@files/" in rendered
+    )
+
+
+def test_the_experiments_container_is_normalised_before_it_joins_the_url():
+    """A leading or trailing slash on the container never doubles up in the URL.
+
+    ``labkey_experiments_project`` is written both ways in real configs
+    (``/dho/experiments`` and ``dho/experiments``). A doubled slash makes a URL
+    that looks right in a log line and 404s against WebDAV.
+    """
+    for container in ("/proj/experiments", "proj/experiments/", "/proj/experiments/"):
+        config = {**NVD_PARAMS, "labkey_experiments_project": container}
+
+        rendered = build_params_yaml(config, 4471, "/staging/4471/samplesheet.csv")
+
+        assert "_webdav/proj/experiments/4471/@files/" in rendered
+        assert "//4471" not in rendered
+        assert "_webdav//" not in rendered
+
+
+def test_the_upload_targets_have_no_production_defaults():
+    """A missing upload target raises rather than letting NVD pick its own.
+
+    The same guardrail as the reference-data params above, applied to the keys
+    where falling back is most costly: NVD's internal default is the live
+    production list.
+    """
+    incomplete = dict(NVD_PARAMS)
+    del incomplete["nvd_labkey_blast_meta_hits_list"]
+
+    with pytest.raises(KeyError, match="nvd_labkey_blast_meta_hits_list"):
+        build_params_yaml(incomplete, 4471, "/staging/4471/samplesheet.csv")
 
 
 # ---------------------------------------------------------------------------

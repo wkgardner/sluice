@@ -64,19 +64,36 @@ sluice setup
 ```
 
 Creates `~/.sluice/` — config, database, logs, credential files — and migrates the database. Then
-edit `~/.sluice/config.json` to fill in the values it lists, and put your credentials in the empty
+edit `~/.sluice/config.toml` to fill in the values it lists, and put your credentials in the empty
 files under `~/.sluice/secrets/`.
+
+The config is grouped into sections with every key explained in a comment above it, so the file
+tells you what it wants without you coming back here. **Those sections are for reading only** —
+sluice discards them when it loads the file, so a key works wherever you put it, and moving one
+between sections changes nothing. The one thing that is an error is setting the same key twice in
+two different sections; sluice refuses to load that rather than silently picking one.
 
 On a later run it adds keys the new version introduced and leaves everything you have already set
 alone: no value you tuned is ever overwritten. Use `--dry-run` to see what it would change.
 
 Re-running against an existing config **asks first**, and copies the old file to
-`config.json.bak` before writing. Your values survive either way. The backup is there because the
-file is rewritten sorted and reformatted, which loses any ordering you arranged by hand — and
+`config.toml.bak` before writing. Your values survive either way. The backup is there because the
+file is regenerated from the schema, which loses any comments or ordering you added by hand — and
 loses unsaved changes if an editor has the file open, so **close it before re-running.** Pass
 `--yes` to skip the question. In a script, setup refuses rather than rewriting unasked.
 
-If it reports keys "not used by this version", they are left in place untouched.
+If it reports keys "not used by this version", they are left in place, collected under an
+`[unrecognised]` section so you can see what is no longer read.
+
+### Coming from a `config.json`
+
+Installs from before sluice used TOML have a `config.json`. The next `sluice setup` migrates it:
+your values move into `config.toml`, and **the old file is left exactly where it is**. Nothing is
+overwritten, so there is nothing to confirm and no backup to take — the old file is the backup.
+Delete it once you are happy, and until you do, `config.toml` is the one that counts.
+
+Every command still reads a `config.json` when no `config.toml` sits beside it, so upgrading
+sluice does not break anything before you get to `sluice setup`.
 
 ---
 
@@ -88,21 +105,18 @@ or a **local directory** (rehearsal, no credentials needed). It picks local mode
 
 ### Remote
 
-```json
-"remote_user":        "<remote_user>",
-"remote_host":        "<remote_host>",
-"remote_source_path": "<remote_source_path>",
-"password_file":      "~/.sluice/secrets/remote_password"
+```toml
+[detection]
+remote_user        = "<remote_user>"
+remote_host        = "<remote_host>"
+remote_source_path = "<remote_source_path>"
+password_file      = "~/.sluice/secrets/remote_password"
 ```
 
 The first three are yours to fill in — the real host, account and path live in your
 config, never in this guide.
 
-`remote_source_path` has two rules, and breaking either one fails quietly rather than loudly.
-
-**It must end with a slash.** Without one, `rsync` describes the folder instead of listing
-what is inside it, and sluice sees a single run named after your directory rather than the
-runs within it. Nothing adds the slash for you.
+`remote_source_path` has one rule, and breaking it fails quietly rather than loudly.
 
 **It must point at the folder that CONTAINS run directories** — not at a run, and not at a
 delivery folder inside a run. Given this on the server:
@@ -120,7 +134,8 @@ set `remote_source_path` to `deliveries/`. The run is then
 nothing, because the fastq files would be loose at the top level and a loose fastq is not
 a run.
 
-Relative paths resolve against the SSH user's home directory.
+Relative paths resolve against the SSH user's home directory. The trailing slash matters to
+`rsync`, but sluice adds it for you, so `deliveries` and `deliveries/` behave the same.
 
 ### What sluice treats as a run
 
@@ -135,12 +150,12 @@ harm. The files can sit at any depth inside the run folder — the delivery-fold
 above is found fine — and all of them count toward that one run.
 
 If a folder you expect is not being picked up, it is almost always one of those two
-missing, or the trailing slash.
+missing, or `remote_source_path` pointing at the wrong level.
 
 ### Local, for rehearsal
 
-```json
-"local_source_dir": "/path/to/a/folder/of/runs"
+```toml
+local_source_dir = "/path/to/a/folder/of/runs"
 ```
 
 Same layout rules, same run-detection filter, no SSH and no credentials. Clear the key to
@@ -189,10 +204,102 @@ for you.
 
 ---
 
+## Running the daemon
+
+Nothing in sluice moves data except the daemon. The other commands only change stored
+state; the daemon is what notices and acts.
+
+It runs in the foreground until interrupted, and **nothing supervises it** — no service, no
+restart-on-boot. So it lives in a `screen` or `tmux` session:
+
+```bash
+screen -S sluice          # or: tmux new -s sluice
+sluice daemon
+```
+
+Detach with `Ctrl-A D` in screen, or `Ctrl-B D` in tmux. Come back with:
+
+```bash
+screen -r sluice          # or: tmux attach -t sluice
+```
+
+### After a reboot, sluice does not come back on its own
+
+**You have to start it again.** There is no service, and nothing will remind you. If runs
+stop being picked up and nothing else explains it, this is the first thing to check.
+
+### How to tell whether it is actually running
+
+`sluice status` tells you, on its first line:
+
+```
+daemon    running, last look 2026-08-03T14:22:07+00:00
+daemon    NOT RUNNING — start it: sluice daemon          ← red
+```
+
+That is a real check, not a guess — it asks the operating system who holds the daemon's lock
+file. **This only works from the machine the daemon runs on**, which is where you are anyway,
+because every sluice command is refused from anywhere else.
+
+The timestamp is the last time the daemon *began* a look. It being old is not by itself a
+problem: an NVD run takes hours, and during one the daemon is alive and working rather than
+looping. `running` with an old timestamp and an active run is normal. `running` with an old
+timestamp and nothing in flight is worth asking about.
+
+Starting a second daemon on the same machine is safe: it fails immediately on the lock file
+rather than racing the first one.
+
+---
+
+## Letting other people operate sluice
+
+By default an installation belongs to one person: the config and credentials are
+readable only by whoever ran `sluice setup`. To let a team operate it:
+
+```bash
+sluice setup --shared-group sluice-ops
+```
+
+Everyone in that Unix group can then see run state, hold, unhold, skip and clear
+errors. **Your credentials are not shared** — `secrets/` stays yours alone, because
+operating sluice never needs the passwords the daemon uses. Only the config and the
+state directory are widened.
+
+### Everyone must run from the machine the daemon is on
+
+This is not a convention, it is enforced. The state database is claimed by whichever
+host the daemon starts on, and a command from any other machine is refused:
+
+```
+sluice: this sluice database belongs to 'submit1' and you are on 'submit2'.
+```
+
+The reason is worth knowing, because the failure it prevents is silent. The database
+lives on your shared home directory, and SQLite databases corrupt when two different
+machines open them at once. There is no error when it happens — you find out later,
+when the run history is gone. So sluice refuses instead, and tells you where to go.
+
+The same check stops a second daemon starting on a second node, which the normal
+single-instance lock cannot see (that lock only works within one machine).
+
+If you move the daemon to a different host, just start it there; the next start
+re-claims the database, and everyone follows it.
+
+### Who did what
+
+Every state change records the OS user who made it, and there is no way to record
+anything else. `sluice audit`-style questions are answered from that trail, so it
+has to be a name nobody could have chosen for themselves.
+
+If you have scripts passing `--actor`, that flag is gone and they will fail loudly
+rather than quietly recording the wrong person.
+
+---
+
 ## Everyday commands
 
-All commands take `--config PATH`, or read `$SLUICE_CONFIG`, or fall back to `./config.json`.
-After `sluice setup`, point `$SLUICE_CONFIG` at `~/.sluice/config.json` (or pass `--config`).
+All commands take `--config PATH`, or read `$SLUICE_CONFIG`, or fall back to `./config.toml`.
+After `sluice setup`, point `$SLUICE_CONFIG` at `~/.sluice/config.toml` (or pass `--config`).
 
 ### See everything
 
@@ -202,7 +309,7 @@ sluice status
 
 ```
 pipeline profile  production-v3.1
-daemon            running
+daemon            running, last look 2026-08-03T14:22:07+00:00
 
 RUN             EXPERIMENT  OUTCOME      LIFECYCLE  NOTE
 SEQ_20260728_A  4468        completed    active

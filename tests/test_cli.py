@@ -1,13 +1,15 @@
 """Behavioral tests for the ``sluice`` CLI and the config loader (plan 15 increment 4).
 
 Every test drives ``main(argv)`` against a real database built through the real migrations and a
-real ``config.json`` under ``tmp_path``, then reads captured stdout. Nothing is mocked: the CLI is
+real ``config.toml`` under ``tmp_path``, then reads captured stdout. Nothing is mocked: the CLI is
 a thin layer, and testing it through anything but its actual entry point would test the wrong
 thing.
 """
 
+import getpass
 import hashlib
 import json
+import socket
 
 import pytest
 
@@ -17,11 +19,12 @@ from sluice.config import (
     HOME_ENV_VAR,
     ConfigError,
     load_config,
+    parse_config_text,
     resolve_config_path,
 )
-from sluice.config.setup import plan_setup
+from sluice.config.setup import plan_setup, render_config_toml
 from sluice.config.schema import CONFIG_FIELDS
-from sluice.core.daemon import assemble_registry
+from sluice.core.daemon import assemble_registry, record_daemon_host
 from sluice.core.db import initialize_database, insert_run, update_run, write_txn
 from sluice.core.profile import REFERENCE_PROFILES
 from sluice.doctor import Severity, run_doctor
@@ -33,15 +36,10 @@ def deployment(tmp_path):
     """A config file plus an initialized database, as a real install would have."""
     state_file = tmp_path / "sluice_state.db"
     initialize_database(state_file)
-    config_path = tmp_path / "config.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "state_file": str(state_file),
-                "local_staging_dir": str(tmp_path / "staging"),
-            }
-        ),
-        encoding="utf-8",
+    config_path = _write_config(
+        tmp_path / "config.toml",
+        state_file=str(state_file),
+        local_staging_dir=str(tmp_path / "staging"),
     )
     return types_namespace(config_path=config_path, state_file=state_file)
 
@@ -67,12 +65,12 @@ def add_run(state_file, name, **columns):
 
 
 def test_config_precedence_is_flag_then_env_then_cwd_then_home(tmp_path, monkeypatch):
-    """``--config`` > ``$SLUICE_CONFIG`` > ``./config.json`` > ``<home>/config.json``."""
+    """``--config`` > ``$SLUICE_CONFIG`` > ``./config.toml`` > ``<home>/config.toml``."""
     import pathlib
 
-    monkeypatch.setenv(CONFIG_ENV_VAR, "/from/env.json")
-    assert resolve_config_path("/explicit.json") == pathlib.Path("/explicit.json")
-    assert str(resolve_config_path(None)) == "/from/env.json"
+    monkeypatch.setenv(CONFIG_ENV_VAR, "/from/env.toml")
+    assert resolve_config_path("/explicit.toml") == pathlib.Path("/explicit.toml")
+    assert str(resolve_config_path(None)) == "/from/env.toml"
 
     monkeypatch.delenv(CONFIG_ENV_VAR)
     home = tmp_path / "home"
@@ -84,10 +82,16 @@ def test_config_precedence_is_flag_then_env_then_cwd_then_home(tmp_path, monkeyp
     monkeypatch.chdir(working)
 
     # Nothing in the working directory: fall through to the sluice home.
-    assert resolve_config_path(None) == home / "config.json"
+    assert resolve_config_path(None) == home / "config.toml"
 
     # A config that is really there in the working directory still wins, which is
     # what keeps a repo checkout usable without --config.
+    (working / "config.toml").write_text("", encoding="utf-8")
+    assert str(resolve_config_path(None)) == "config.toml"
+
+    # A pre-TOML install is still found, so upgrading sluice does not break
+    # every command before the operator reaches `sluice setup`.
+    (working / "config.toml").unlink()
     (working / "config.json").write_text("{}", encoding="utf-8")
     assert str(resolve_config_path(None)) == "config.json"
 
@@ -96,7 +100,7 @@ def test_the_config_setup_writes_is_the_config_commands_read(tmp_path, monkeypat
     """Setup's output path and the resolver's default must be the same file.
 
     They were not, and it made a correct install unusable: `sluice setup` wrote
-    `~/.sluice/config.json`, every command looked for `./config.json`, and setup
+    `~/.sluice/config.toml`, every command looked for `./config.toml`, and setup
     then told the operator to run a command that could not find what it had just
     written. Pinned as one assertion so the writer and the reader cannot drift
     apart again.
@@ -125,10 +129,10 @@ def test_a_missing_config_names_the_path_it_tried(tmp_path):
     assert CONFIG_ENV_VAR in str(raised.value)
 
 
-def test_invalid_json_is_reported_as_a_config_error(tmp_path):
-    """A malformed config fails as ConfigError, not a raw JSONDecodeError."""
-    bad = tmp_path / "config.json"
-    bad.write_text("{not json", encoding="utf-8")
+def test_invalid_config_text_is_reported_as_a_config_error(tmp_path):
+    """A malformed config fails as ConfigError, not a raw parser exception."""
+    bad = tmp_path / "config.toml"
+    bad.write_text("not [ toml", encoding="utf-8")
 
     with pytest.raises(ConfigError):
         load_config(str(bad))
@@ -264,26 +268,34 @@ def test_every_state_change_reports_its_audit_id(deployment, capsys):
     assert "audited as #" in capsys.readouterr().out
 
 
-def test_the_actor_defaults_to_the_os_user_and_is_overridable(deployment, capsys):
-    """``--actor`` names who acted; the audit row records it.
+def test_the_actor_is_the_os_user_and_cannot_be_chosen(deployment, capsys):
+    """The audit row names whoever is logged in, and nothing can override it.
 
-    There is no anonymous path — an unattributed audit row is worthless evidence.
+    ``--actor`` used to accept any string. That was harmless while one person
+    could write to the database and became fake evidence the moment several
+    could: a trail recording who *claimed* to act is worse than no trail, since
+    it reads as authoritative. The OS user is the one identity the CLI does not
+    have to take anyone's word for.
     """
     add_run(deployment.state_file, "SEQ_008")
 
-    main(
-        [
-            "--config",
-            str(deployment.config_path),
-            "--actor",
-            "night-shift",
-            "--json",
-            "hold",
-            "SEQ_008",
-        ]
+    main(["--config", str(deployment.config_path), "--json", "hold", "SEQ_008"])
+
+    assert json.loads(capsys.readouterr().out)["actor"] == getpass.getuser()
+
+
+def test_the_actor_flag_is_gone_rather_than_quietly_ignored(deployment, capsys):
+    """``--actor`` is a usage error now, not a silently discarded option.
+
+    Accepting and ignoring it would let an existing script keep running while
+    recording something other than what it names — the failure mode this change
+    exists to remove, reintroduced as a surprise.
+    """
+    exit_code = main(
+        ["--config", str(deployment.config_path), "--actor", "someone", "hold", "X"]
     )
 
-    assert json.loads(capsys.readouterr().out)["actor"] == "night-shift"
+    assert exit_code == 2
 
 
 def test_an_unknown_run_exits_nonzero_with_a_clear_message(deployment, capsys):
@@ -312,8 +324,52 @@ def test_pause_and_resume_toggle_the_global_flag(deployment, capsys):
 
     assert main([*config, "resume"]) == 0
     main([*config, "status"])
-    paused_output = capsys.readouterr().out
-    assert "PAUSED" not in paused_output and "running" in paused_output
+    resumed_output = capsys.readouterr().out
+    assert "PAUSED" not in resumed_output
+
+
+def test_status_says_so_when_no_daemon_is_running(deployment, capsys):
+    """A dead daemon is reported as dead, and the fix is on the same line.
+
+    Nothing supervises the daemon (errata E1), so after a reboot it is simply
+    not there — and this line is the only place an operator would find that
+    out. It used to print "running" off the pause flag, which is a different
+    question entirely, and would have sent someone hunting anywhere except the
+    real cause.
+
+    No daemon runs during tests, so the honest answer here is NOT RUNNING.
+    """
+    main(["--config", str(deployment.config_path), "status"])
+
+    output = capsys.readouterr().out
+    assert "NOT RUNNING" in output
+    assert "sluice daemon" in output, "the report must say how to fix it"
+
+
+def test_status_reports_liveness_and_last_look_separately(deployment, capsys):
+    """A live daemon mid-gate must not read as a dead one.
+
+    Liveness comes from the lock, progress from the heartbeat. A gate can run
+    for hours with no time bound (⚑F), so an old heartbeat on a live daemon is
+    normal work — reporting that as a fault is the cry-wolf failure that trains
+    operators to ignore the line.
+    """
+    from sluice.core.daemon import DAEMON_LAST_LOOK_KEY, acquire_daemon_lock
+    from sluice.core.db import set_metadata, write_txn
+
+    with write_txn(deployment.state_file) as connection:
+        set_metadata(connection, DAEMON_LAST_LOOK_KEY, "2026-08-03T01:00:00+00:00")
+
+    # Hold the lock exactly as a running daemon would.
+    handle = acquire_daemon_lock(str(deployment.state_file) + ".lock")
+    try:
+        main(["--config", str(deployment.config_path), "status"])
+    finally:
+        handle.close()
+
+    output = capsys.readouterr().out
+    assert "NOT RUNNING" not in output
+    assert "running" in output and "2026-08-03T01:00:00+00:00" in output
 
 
 def test_help_explains_that_commands_are_state_only(capsys):
@@ -401,9 +457,21 @@ def test_every_outcome_the_system_can_report_has_a_style():
 
 
 def _write_config(path, **values):
-    """A config file with exactly the keys a test cares about."""
-    path.write_text(json.dumps(values), encoding="utf-8")
+    """A config file with exactly the keys a test cares about.
+
+    Written through the real emitter rather than a hand-rolled TOML string, so a
+    test config is the same shape as one ``sluice setup`` produces — including
+    for keys the schema does not declare, which ride along as unrecognised.
+    """
+    known = {field.name for field in CONFIG_FIELDS}
+    unknown = tuple(key for key in values if key not in known)
+    path.write_text(render_config_toml(values, unknown), encoding="utf-8")
     return path
+
+
+def _read_config(path) -> dict:
+    """The config file as flat keys, the way every sluice command reads it."""
+    return parse_config_text(path.read_text(encoding="utf-8"), str(path))
 
 
 def test_doctor_exits_one_when_something_fails(deployment, capsys):
@@ -507,11 +575,19 @@ def test_doctor_exits_zero_on_warnings_only(tmp_path, capsys, monkeypatch):
         nvd_blast_db_prefix="nt",
         nvd_blast_db_version="2024-01",
         nvd_virus_index_version="1.4",
+        # NVD's own upload targets. No default is possible for any of them: a
+        # baked-in list name would be a production value in the source, and the
+        # one it would be is the live results list.
+        nvd_labkey_server="https://labkey.example",
+        nvd_labkey_project_name="Proj/Uploads",
+        nvd_labkey_blast_fasta_list="example_fasta_list",
+        nvd_labkey_blast_meta_hits_list="example_meta_list",
+        nvd_labkey_exp_id_guard_list="example_guard_list",
         slack_enabled=False,
     )
 
     config_path = _write_config(
-        tmp_path / "config.json", **setup_defaults | operator_supplied
+        tmp_path / "config.toml", **setup_defaults | operator_supplied
     )
 
     exit_code = main(["--config", str(config_path), "doctor"])
@@ -525,7 +601,7 @@ def test_doctor_with_no_config_at_all_points_at_setup(tmp_path, capsys):
     """The first command a new operator runs must not be a dead end.
 
     The shared loader message offers ``--config``, ``$SLUICE_CONFIG`` and a cwd
-    ``config.json`` — all three of which presuppose a config that exists. On a
+    ``config.toml`` — all three of which presuppose a config that exists. On a
     machine where sluice has never been installed the answer is `sluice setup`,
     and doctor is where that operator will be standing.
     """
@@ -602,7 +678,7 @@ def test_a_fresh_install_does_not_prompt(tmp_path, capsys):
     exit_code = main(["setup", "--home", str(home)])
 
     assert exit_code == 0
-    assert (home / "config.json").is_file()
+    assert (home / "config.toml").is_file()
 
 
 def test_rewriting_an_existing_config_refuses_without_a_terminal(tmp_path, capsys):
@@ -614,10 +690,10 @@ def test_rewriting_an_existing_config_refuses_without_a_terminal(tmp_path, capsy
     """
     home = tmp_path / "h"
     main(["setup", "--home", str(home)])
-    config_path = home / "config.json"
-    edited = json.loads(config_path.read_text())
+    config_path = home / "config.toml"
+    edited = _read_config(config_path)
     edited["remote_host"] = "seq.example.edu"
-    config_path.write_text(json.dumps(edited), encoding="utf-8")
+    _write_config(config_path, **edited)
     before = config_path.read_bytes()
 
     exit_code = main(["setup", "--home", str(home)])
@@ -631,25 +707,25 @@ def test_yes_rewrites_and_keeps_a_backup_of_what_was_there(tmp_path, capsys):
     """--yes proceeds, and the backup holds the OLD file, not a copy of the new one.
 
     The backup is the real protection: values survive a rewrite either way, but
-    the file is re-sorted and reformatted, and an editor holding it open is a
+    the file is regenerated from the schema, and an editor holding it open is a
     live way to lose work. A backup taken after writing would be worthless.
     """
     home = tmp_path / "h"
     main(["setup", "--home", str(home)])
-    config_path = home / "config.json"
-    edited = json.loads(config_path.read_text())
+    config_path = home / "config.toml"
+    edited = _read_config(config_path)
     edited["remote_host"] = "seq.example.edu"
-    config_path.write_text(json.dumps(edited), encoding="utf-8")
+    _write_config(config_path, **edited)
     before = config_path.read_bytes()
 
     exit_code = main(["setup", "--home", str(home), "--yes"])
 
     assert exit_code == 0
-    backup = home / "config.json.bak"
+    backup = home / "config.toml.bak"
     assert backup.is_file()
     assert backup.read_bytes() == before, "the backup is not the pre-write file"
     # And the hand-set value survived the rewrite, as it always must.
-    assert json.loads(config_path.read_text())["remote_host"] == "seq.example.edu"
+    assert _read_config(config_path)["remote_host"] == "seq.example.edu"
 
 
 def test_doctor_puts_failures_at_the_bottom(deployment, capsys):
@@ -674,3 +750,58 @@ def test_doctor_puts_failures_at_the_bottom(deployment, capsys):
     )
 
     assert first_fail > last_ok, "a passing check was rendered below a failure"
+
+
+# ---------------------------------------------------------------------------
+# The cross-host guard.
+# ---------------------------------------------------------------------------
+
+
+def test_a_command_from_the_wrong_host_is_refused(deployment, capsys, monkeypatch):
+    """Every DB-touching command refuses from a node the daemon does not own.
+
+    The state file lives on shared storage on a cluster, so a colleague running
+    this from another login node would be a second NFS client on a WAL database
+    — silent corruption, taking the run history with it (design §5). The refusal
+    names the host to go to, because "wrong host" without "which host" leaves
+    someone guessing across a dozen login nodes.
+    """
+    record_daemon_host(deployment.state_file, "submit1")
+    monkeypatch.setattr(socket, "gethostname", lambda: "submit2")
+
+    exit_code = main(["--config", str(deployment.config_path), "status"])
+
+    assert exit_code == 1
+    error_output = capsys.readouterr().err
+    assert "submit1" in error_output
+
+
+def test_a_control_write_from_the_wrong_host_is_refused(
+    deployment, capsys, monkeypatch
+):
+    """The guard covers writes, not just reads — the case that corrupts."""
+    add_run(deployment.state_file, "SEQ_001")
+    record_daemon_host(deployment.state_file, "submit1")
+    monkeypatch.setattr(socket, "gethostname", lambda: "submit2")
+
+    exit_code = main(["--config", str(deployment.config_path), "hold", "SEQ_001"])
+
+    assert exit_code == 1
+    assert "submit1" in capsys.readouterr().err
+
+
+def test_commands_work_normally_on_the_claimed_host(deployment, capsys, monkeypatch):
+    """The ordinary case is untouched: right host, no interference."""
+    record_daemon_host(deployment.state_file, "submit1")
+    monkeypatch.setattr(socket, "gethostname", lambda: "submit1")
+
+    exit_code = main(["--config", str(deployment.config_path), "status"])
+
+    assert exit_code == 0
+
+
+def test_an_unclaimed_database_is_usable_from_anywhere(deployment, capsys, monkeypatch):
+    """Before any daemon has run, nothing is pinned and setup must still work."""
+    monkeypatch.setattr(socket, "gethostname", lambda: "whatever")
+
+    assert main(["--config", str(deployment.config_path), "status"]) == 0

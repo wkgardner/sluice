@@ -133,19 +133,33 @@ def is_local_mode(config) -> bool:
     return bool(config.get(SOURCE_DIR_KEY))
 
 
+def _lists_contents(source: str) -> str:
+    """Return ``source`` with the trailing slash ``rsync`` reads as "the contents of".
+
+    The slash is LOAD-BEARING and idempotent here: ``rsync --list-only <dir>``
+    describes the directory entry, ``<dir>/`` lists what is inside it. One
+    helper for both modes so the two branches cannot drift — the remote branch
+    used to interpolate the operator's path verbatim, which turned a forgotten
+    slash into a single run named after the source directory.
+    """
+    return source if source.endswith("/") else source + "/"
+
+
 def build_listing_command(config) -> tuple[list[str], dict[str, str]]:
     """Build the exact ``(argv, env_overlay)`` for a ``--list-only`` sweep.
 
     Local mode iff ``config["local_source_dir"]`` is truthy (a presence check,
     not a value default — the example config documents it as optional-or-empty):
-    a plain ``rsync --list-only`` of the directory's contents (the trailing slash
-    is load-bearing), empty overlay. Otherwise remote mode: ``remote_user``,
-    ``remote_host``, ``remote_source_path`` and ``password_file`` are read by
-    subscript (no fallback — a baked-in remote path would be a production default
-    in code, C2's lesson), and the password (stripped) rides the ``SSHPASS``
-    overlay for ``sshpass -e``, never on argv. Both argvs pin ``--list-only`` and
-    the include/exclude filter sequence — this argv is detection's contract with
-    the remote.
+    a plain ``rsync --list-only`` of the directory's contents, empty overlay.
+    Otherwise remote mode: ``remote_user``, ``remote_host``,
+    ``remote_source_path`` and ``password_file`` are read by subscript (no
+    fallback — a baked-in remote path would be a production default in code,
+    C2's lesson), and the password (stripped) rides the ``SSHPASS`` overlay for
+    ``sshpass -e``, never on argv. Both argvs pin ``--list-only`` and the
+    include/exclude filter sequence — this argv is detection's contract with the
+    remote — and both source paths go through ``_lists_contents``, so a path
+    written without its trailing slash is corrected rather than listing the
+    directory entry as one run named after the source folder.
 
     Args:
         config: the loaded config; ``local_source_dir`` probed with ``get`` (the
@@ -174,7 +188,7 @@ def build_listing_command(config) -> tuple[list[str], dict[str, str]]:
             "--include=*.sha256",
             "--exclude=*",
             "-r",
-            local_source_dir + "/",
+            _lists_contents(local_source_dir),
         ]
         return argv, {}
 
@@ -194,7 +208,7 @@ def build_listing_command(config) -> tuple[list[str], dict[str, str]]:
         "--include=*.sha256",
         "--exclude=*",
         "-r",
-        f"{remote_user}@{remote_host}:{remote_source_path}",
+        f"{remote_user}@{remote_host}:{_lists_contents(remote_source_path)}",
     ]
     return argv, {"SSHPASS": password}
 
