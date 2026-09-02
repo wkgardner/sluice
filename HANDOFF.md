@@ -1380,6 +1380,40 @@ actually protected.
    **Next, unchanged from 3r: doctor increments B and C.** Note **C = the daemon startup gate**
    now overlaps this work — `is_daemon_running` is the probe C would need, and C should use it
    rather than grow a second one.
+3x. ✅ **THE TRAILING-SLASH ASYMMETRY IS CLOSED, AND CHTC HAS A DEPLOYMENT GUIDE** 2026-09-02.
+   Two commits on `config-toml-and-nvd-upload-targets`, still unpushed. 751 tests green, lint
+   clean.
+   - **The latent bug named in 3r is fixed.** `build_listing_command` appended the load-bearing
+     trailing slash on the local branch (`local_source_dir + "/"`) and interpolated
+     `remote_source_path` **verbatim** on the remote one. An operator who omitted it got
+     `rsync --list-only <dir>` describing the directory *entry* instead of listing its contents
+     — sluice then detects **one run named after the source folder**, containing everything.
+     Silent: no crash, no error, a plausible-looking run.
+   - **Fixed as a shared helper, not a second append.** `_lists_contents` normalises both
+     branches, so the two cannot drift apart again — the twin pattern 3w applied to the same
+     class of defect. Idempotent, so an operator who followed the doc and one who did not
+     produce identical argv.
+   - **Documentation was the only guard, in three places, and all three were wrong the moment
+     the code changed** — `docs/OPERATING.md` ("Nothing adds the slash for you"), the
+     `remote_source_path` schema help text ("MUST END WITH A SLASH"), and the same text copied
+     into `config.example.toml`. All corrected in the same commit. **The example config's
+     comments are not guarded** — `test_the_example_config_matches_the_schema` compares key
+     *names* only, so its prose can drift from the schema's silently. That is an open gap.
+   - **The pinned `REMOTE_ARGV` changed** from `host:.` to `host:./`. Equivalent to rsync, but
+     that constant is detection's byte-exact contract with the remote, so the change is
+     deliberate and commented rather than absorbed.
+   - **Still a third copy of the rsync rule:** `transfer.py:195` appends its own trailing slash
+     after `pathlib` construction (where it is never already present). Left alone — the
+     situation genuinely differs — but it is the next place this rule could rot.
+   - **`docs/DEPLOYING-CHTC.md` is new**: the ordered first-install path for a CHTC login node,
+     referencing `OPERATING.md` rather than restating it. Encodes ADR-0007's shape (one login
+     node, DB on shared home, `--shared-group`), the no-scratch constraint on every working
+     path, the operator-supplied config keys, and the reboot gap. **Records that
+     `disk_quota_root` fails open** — on a filesystem without CephFS quota xattrs the headroom
+     check warns and proceeds, so a clean `doctor` is not proof of disk space. Written from the
+     schema and the code, **not verified against a real CHTC install**; it is untested until
+     Will runs it.
+   **Next: doctor increments B and C, unchanged.** Deploying CHTC first requires item 4 below.
 4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
    is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
    remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`
