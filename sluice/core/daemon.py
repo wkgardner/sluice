@@ -56,16 +56,20 @@ from sluice.core.reconcile import is_complete, next_gate
 __all__ = [
     "DaemonHostError",
     "DaemonLockError",
+    "DAEMON_LAST_LOOK_KEY",
     "acquire_daemon_lock",
     "assemble_registry",
     "assert_daemon_host",
     "configure_logging",
     "daemon_host_path",
+    "daemon_lock_path",
     "detect_new_runs",
     "install_signal_handlers",
+    "is_daemon_running",
     "prepare_database",
     "process_run",
     "read_daemon_host",
+    "read_last_look",
     "record_daemon_host",
     "run_cycle",
     "run_forever",
@@ -164,6 +168,75 @@ def assert_daemon_host(state_file, current_host: str) -> None:
         f"from a second machine risks corrupting it (design §5). Run this on "
         f"{recorded!r} instead."
     )
+
+
+DAEMON_LAST_LOOK_KEY = "daemon_last_look"
+
+
+def daemon_lock_path(state_file) -> pathlib.Path:
+    """Where the daemon's lock file lives, beside the database.
+
+    One home for the rule: ``run_forever`` takes this lock and
+    ``is_daemon_running`` probes it, and a second copy of the derivation would
+    let the holder and the probe disagree about which file they mean — the probe
+    would then report "not running" forever, which is worse than not probing.
+    """
+    return pathlib.Path(str(state_file) + ".lock")
+
+
+def is_daemon_running(state_file) -> bool:
+    """Whether a daemon currently holds the lock on THIS machine.
+
+    A true liveness check rather than a heartbeat: it asks the operating system
+    who holds the flock, so a daemon busy inside an hours-long gate reports
+    running, exactly as one sitting in its poll sleep does. A heartbeat alone
+    cannot tell those apart — NVD has no time bound (⚑F), so a stale timestamp
+    is as consistent with healthy work as with a dead process.
+
+    Only meaningful on the host the daemon runs on, which is the only place
+    operators are (ADR-0007: everyone SSHes into that one machine, and
+    ``assert_daemon_host`` refuses commands from anywhere else). ``flock`` is
+    per-machine and cannot see a daemon on another node.
+
+    Read-only by construction: opened ``"rb"``, so a probe never creates the lock
+    file and never truncates it — ``acquire_daemon_lock`` opens ``"w"``, which
+    would. A missing file means no daemon has ever started here, reported as not
+    running rather than as an error.
+    """
+    lock_file = daemon_lock_path(state_file)
+    try:
+        handle = lock_file.open("rb")
+    except OSError:
+        # Absent, or unreadable by this operator. Either way we cannot say a
+        # daemon is running, and inventing an answer would be worse than "no".
+        return False
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        # Someone holds it. On this host that is the daemon, by definition.
+        return True
+    else:
+        # We took it, so nobody had it. Release immediately — this probe must
+        # never become the thing that blocks a daemon from starting.
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return False
+    finally:
+        handle.close()
+
+
+def read_last_look(state_file) -> str | None:
+    """When the daemon last began a look, as an ISO timestamp, or ``None``.
+
+    Complements ``is_daemon_running``: the lock says whether a daemon is there,
+    this says whether it is getting round to anything. A live daemon whose last
+    look is hours old is inside a long gate; a live daemon that never advances
+    it is wedged, which nothing else in the system would surface.
+    """
+    connection = get_connection(str(state_file))
+    try:
+        return get_metadata(connection, DAEMON_LAST_LOOK_KEY)
+    finally:
+        connection.close()
 
 
 def acquire_daemon_lock(lock_path):
@@ -864,7 +937,7 @@ def run_forever(
     # Fail loud on missing config BEFORE any side effect (unit 6).
     poll_interval_minutes = config["poll_interval_minutes"]
     state_file = str(config["state_file"])
-    lock_path = state_file + ".lock"
+    lock_path = daemon_lock_path(state_file)
 
     # Ordered before the lock deliberately: the flock is per-machine, so on the
     # wrong node it would succeed and tell us nothing. The host claim is the
@@ -893,6 +966,13 @@ def run_forever(
         while not shutdown_event.is_set():
             if max_cycles is not None and cycles_run >= max_cycles:
                 break
+            # Stamped before the look, not after: a gate can run for hours (⚑F),
+            # and a timestamp written only on completion would leave an operator
+            # unable to tell "started a look and is working" from "died before
+            # starting one". Its own transaction, so a later gate failure cannot
+            # roll the heartbeat back.
+            with write_txn(state_file) as heartbeat_connection:
+                set_metadata(heartbeat_connection, DAEMON_LAST_LOOK_KEY, now_iso())
             run_cycle(
                 config,
                 registry=registry,
