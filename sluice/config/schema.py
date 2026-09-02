@@ -168,10 +168,10 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
         "remote_source_path",
         FieldKind.VALUE,
         "detection",
-        "Path on the sequencing server holding run directories. MUST END WITH A "
-        "SLASH, and must point at the folder CONTAINING the run directories, not "
-        "at a run or a delivery inside one. Relative paths are relative to the "
-        "SSH user's home.",
+        "Path on the sequencing server holding run directories. Must point at "
+        "the folder CONTAINING the run directories, not at a run or a delivery "
+        "inside one. A trailing slash is added for you if you leave it off. "
+        "Relative paths are relative to the SSH user's home.",
         probe=ProbeKind.HOST_REACHABLE,
     ),
     ConfigField(

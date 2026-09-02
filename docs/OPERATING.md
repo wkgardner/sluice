@@ -116,11 +116,7 @@ password_file      = "~/.sluice/secrets/remote_password"
 The first three are yours to fill in — the real host, account and path live in your
 config, never in this guide.
 
-`remote_source_path` has two rules, and breaking either one fails quietly rather than loudly.
-
-**It must end with a slash.** Without one, `rsync` describes the folder instead of listing
-what is inside it, and sluice sees a single run named after your directory rather than the
-runs within it. Nothing adds the slash for you.
+`remote_source_path` has one rule, and breaking it fails quietly rather than loudly.
 
 **It must point at the folder that CONTAINS run directories** — not at a run, and not at a
 delivery folder inside a run. Given this on the server:
@@ -138,7 +134,8 @@ set `remote_source_path` to `deliveries/`. The run is then
 nothing, because the fastq files would be loose at the top level and a loose fastq is not
 a run.
 
-Relative paths resolve against the SSH user's home directory.
+Relative paths resolve against the SSH user's home directory. The trailing slash matters to
+`rsync`, but sluice adds it for you, so `deliveries` and `deliveries/` behave the same.
 
 ### What sluice treats as a run
 
@@ -153,7 +150,7 @@ harm. The files can sit at any depth inside the run folder — the delivery-fold
 above is found fine — and all of them count toward that one run.
 
 If a folder you expect is not being picked up, it is almost always one of those two
-missing, or the trailing slash.
+missing, or `remote_source_path` pointing at the wrong level.
 
 ### Local, for rehearsal
 
