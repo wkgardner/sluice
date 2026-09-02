@@ -162,9 +162,11 @@ control-core specs" line is retired entirely: they were never on disk in any for
     single-machine backup look urgent when it is done, and it makes "rsync macOS → CHTC" look
     like the only sync route when `git clone` now covers everything tracked.
     - **Dated ledger entries are NOT rewritten.** The "no git remote configured" standing item in
-      3d, 3e, 3g, 3h, 3i, 3j and 3n was *true on the date each was written*. Editing them would
-      trade one false record for another. They are superseded by this entry; read them as
-      history, not as current state.
+      3d, 3e, 3g, 3h, 3i, 3j and 3n — **and every "on `main`, not pushed" in 2 through 3r** — was
+      *true on the date each was written*. Editing them would trade one false record for another.
+      They are superseded by this entry; read them as history, not as current state.
+      **Everything described in entries 2 through 3t is now published.** Only 3u, 3v and 3w
+      describe unpushed work.
     - **What is corrected in place** is every statement that a reader would act on *now*: §1
       (publication state), §2 (sync route), the 3j "front line" bullet, and §10 item 4.
 14. **The current branch is unpublished, and that is the live gap.**
@@ -222,6 +224,13 @@ control-core specs" line is retired entirely: they were never on disk in any for
      └─ resolves errata §E operational gaps (supervision, `sluice doctor`)
 ```
 
+⚠️ **Plan C is SUPERSEDED as drawn — see §10 entry 3v.** Everything it was going to deliver has
+landed without it: the CLI was built on Typer/rich but talks to `control` **directly**, not over
+HTTP (3p); `sluice doctor` is built (3r, E2); daemon supervision is decided (3v, E1); and
+ADR-0007 rejected the API as the route to multi-user access. The only residue is a FastAPI
+service for operating sluice from a laptop without SSHing to CHTC, which **nobody has asked
+for**. Treat Plan C as **deliberately unbuilt**, not as pending work.
+
 ---
 
 ## 7. Open decisions, indexed by the plan that resolves them
@@ -243,8 +252,11 @@ From the errata. None block the bootstrap.
   (D1); NVD launch dir must be local POSIX, validated at load (D2, A7 — highest-risk NVD port item);
   NVD append-mode logs (D3); download ramp (D4); heartbeats + deployment context (D5); threadpool
   contextvar landmine (D6).
-- **Plan C (API + CLI):** daemon supervision — systemd vs screen (E1); `sluice doctor` preflight for
-  Globus token / CephFS xattrs / `nvd` CLI / Slack token (E2).
+- ~~**Plan C (API + CLI):**~~ **BOTH CLOSED, and Plan C itself is deliberately unbuilt (§6, §10
+  entry 3v).** Daemon supervision (**E1**) — resolved 2026-09-02 as screen, recorded in ADR-0007
+  (3v). `sluice doctor` preflight for Globus token / CephFS xattrs / `nvd` CLI / Slack token
+  (**E2**) — resolved in part 2026-08-03 by doctor increment A (3r); the network tier that
+  actually reaches those services is increment **B**, still unstarted.
 
 ---
 
@@ -270,7 +282,15 @@ From the errata. None block the bootstrap.
 
 ## 9. Current status — what physically exists
 
-### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-07-31
+### macOS (`/Users/willgardner/Bioinformatics/sluice`) — as of 2026-09-02
+
+**STAMP: `pixi run test` → 747 passed, `pixi run lint` → clean, both guards green (2026-09-02,
+re-run by the steward, not taken on report).** Branch `config-toml-and-nvd-upload-targets`;
+`main` published at `0bc8858`, this branch is not (§4.3). The suite progression below runs
+76 → 131 → … → 493 and then continues in the ledger rather than here; the tail is
+**493 → 517 → 654 → 656 → 719 → 720 → 730 → 745 → 747** (entries 3n, 3p, 3q, 3r, 3s, 3u, 3v,
+3w; 3t is documentation-only and moves nothing). The narrative below this stamp is accurate
+except where a later entry supersedes it.
 
 **PLAN A COMPLETE — all nine subsystems (db, gate, events, context, profile, reconcile, audit,
 control, daemon) complete, committed, and green. `pixi run test` → 435 passed (Python 3.14.6,
@@ -634,8 +654,9 @@ release candidate pending Plan B production gates.**
   `docs/dev-cycle/` remain untracked by design.
 - `pixi.toml` (name `sluice`, `platforms = ["linux-64", "osx-arm64"]`, deps: python 3.14 / pytest 9 /
   structlog) + `pixi.lock` (solved with pixi 0.72.1).
-- `config.example.json` — ~69 keys (now incl. `watch_dir`; `folder_events_dir` renamed
-  `run_events_dir`), **placeholders only**, `slack_bot_token` deliberately omitted.
+- ~~`config.example.json`~~ → **`config.example.toml` since `9f91cee`** (entry 3u); the JSON file
+  is deleted, not merely superseded. **Placeholders only**, `slack_bot_token` deliberately
+  omitted, and each key now carries its schema `help` text as a TOML comment.
 - `.github/workflows/test.yml` — hermetic `pixi run test`, `locked: true`, pinned `pixi-version: v0.72.1`.
 - `tests/test_dependency_arrows.py` — the arch guard; installs a `sys.meta_path` blocker and imports
   every `sluice.core` module with `gates`/`api`/`cli`/**`doctor`** forbidden. **Verified it actually
@@ -1187,15 +1208,138 @@ actually protected.
    connections, credentials accepted by their services, a cheap read per endpoint, plus the source
    manifest visibility check added in `6ef04e3`, and the file-vs-directory schema flag `PATH_EXISTS`
    needs and does not have). **C** = the daemon startup gate. Neither is started.
-3s. ✅ **DAEMON LIVENESS IN `sluice status`** 2026-09-02. Two commits — `2c7eb58` *(status: report
+3s. ✅ **DOCTOR REPORT ORDERING** 2026-08-03/09-02. One commit, `198ec64` *(cli: order the doctor
+   report least-urgent-first)*, on `main` and **published**. 719 → **720 tests green**; lint clean.
+   Doctor now renders `skip → ok → warn → FAIL`, so the only rows an operator must act on finish
+   the table directly above the summary. In run order the failures scattered through what is a
+   **forty-odd-row table on a full config**, and the top of it had scrolled away — reading the
+   report meant hunting upward from the summary for the rows that mattered.
+   - **The sort is stable, deliberately.** Within a severity the checks keep the order they ran,
+     so related keys stay adjacent — the `nvd reference data` failures are read and fixed as one
+     group instead of being scattered by an alphabetical re-sort. They are usually one cause.
+   - **`_DOCTOR_DISPLAY_ORDER` is a separate map from `doctor.worst`, and the code says why.**
+     `worst` decides the exit code and ties OK with SKIP, because a skipped check is not a lesser
+     pass and must never influence exit status. Reusing it for display would have interleaved the
+     ok and skip rows — and, worse, coupled a presentation choice to an exit-code rule, so that a
+     later change to reading order could silently move the exit code.
+   - Behaviour otherwise unchanged: same rows, same content, same summary, same exit code.
+3t. ✅ **OPERATOR PROSE PASS — the double `sluice setup`** 2026-08-03/09-02. One commit, `0bc8858`
+   *(docs: stop telling operators to run `sluice setup` twice)*, on `main`, **published, and it is
+   `main`'s current tip.** 720 passed, lint clean — documentation and one help string only, no
+   executable line touched, so no count could move.
+   - **The substantive fix:** `docs/OPERATING.md` told the reader to run `sluice setup` after
+     every release **twice**, two paragraphs apart — once in the heading above the command block
+     and again as a bolded sentence below it. Someone following the install section start to
+     finish would have run it a second time assuming they had missed something. **Cause worth
+     remembering: the `install.sh` section was added on top of the existing text without
+     rereading the section as a whole.** Same class as the drift caught in 3w — the most-copied
+     file in the repo, and no test covers it.
+   - Also removed: a second duplication ("other folders are harmless" / "unrelated folders do not
+     matter", eight lines apart), an inflated framing on the `remote_source_path` warning
+     ("will cost you an evening" replaced with the fact that actually governs how carefully you
+     read on — breaking either rule fails *quietly*), a word echo, and developer jargon from the
+     Typer help.
+   - **Recorded so a later reader does not "fix" them:** the rule-of-three in "no directory is
+     created, no config written, no repository checked out" is three distinct guarantees, not one
+     restated three times; and "setup proves your config is complete; doctor proves it works"
+     keeps its parallelism because the parallelism *is* the distinction between the commands.
+   - OPERATING.md re-scanned for the real host, account and vendor folder name sanitized in
+     `d194cb0` (3r): none reintroduced, the placeholders are still placeholders.
+3u. ✅ **CONFIG BECOMES TOML — AND NVD'S MISSING UPLOAD TARGETS** 2026-09-02. One commit,
+   `9f91cee`, **on branch `config-toml-and-nvd-upload-targets`, not `main`, NOT PUSHED.**
+   720 → **730 tests green**; lint clean. *(Not steward-supervised; this entry summarises the
+   commit's own message, which is unusually complete. It is a summary of a real artifact, not a
+   reconstruction of intent.)*
+   - ⚠️ **A REAL PRODUCTION BUG, and the most consequential thing in this ledger since 3p.**
+     `build_params_yaml` emitted **15 of the 24 params production writes**. The nine missing ones
+     were the entire LabKey upload block plus `trim_adapters`. **Omitting a param does not
+     disable the behaviour** — NVD falls back to the defaults compiled into its own repo, and
+     those defaults are the **live production lists**. So a dropped param is worse than a wrong
+     one: sluice's source reads clean, `sluice doctor` sees nothing, and real results upload to
+     the real lists anyway. Seven new operator-supplied keys close it.
+   - The new keys live in an **`nvd labkey upload` group kept distinct from the existing `labkey`
+     group** — production uploads hits to a container the experiments do not live in, and one
+     group would have implied one destination.
+   - **`labkey_webdav` is derived, not configured** (`build_webdav_url` from `labkey_server` +
+     `labkey_experiments_project`). A key of its own would have been a second place to write the
+     same host down and the first place for it to disagree with the LabKey adapter.
+   - 🏆 **BOTH ANTI-DRIFT GUARDS FIRED ON THIS WORK, AND BOTH WERE WIRED UP RATHER THAN
+     SUPPRESSED.** The schema guard (3p increment 8) flagged the undeclared keys; `test_doctor_
+     drift` (3r) flagged that the `nvd` gate had begun reading from the `labkey` group. **This is
+     the plan-16 mechanism catching a live production defect — precisely the case it was built
+     for**, and the first time it has done so. Record it as evidence when the next guard looks
+     like overhead.
+   - **`config.json` → `config.toml`** so the file an operator edits can carry each key's `help`
+     text as a comment; strict JSON cannot hold one. `render_config_toml` writes one table per
+     schema group, so the config and `sluice doctor` read from the same text and cannot describe
+     a key differently. Reading is stdlib `tomllib`; setup regenerates the whole file each run,
+     so comments are re-derived and no comment-preserving library is needed.
+   - **Tables are discarded at load** — `[nvd] nvd_repo_dir` arrives as `config["nvd_repo_dir"]`,
+     so every existing subscript is untouched and doctor names keys that appear **literally** in
+     the file. Real nesting would have meant doctor naming a key the operator cannot find by
+     searching for it. A key set in two tables is a hard `ConfigError` naming both: table names
+     being cosmetic makes duplicates the one way the file can say two things, and last-wins would
+     make the config mean something no reader could predict.
+   - Migration is safe by construction: **the `config.json` is left exactly where it is**, so it
+     *is* the backup and the migration needs neither confirmation nor one of its own
+     (`SetupPlan.migrated_from` is separate from `is_upgrade` for that reason). An unparseable
+     `config.json` refuses the migration rather than stranding the operator's values in a file
+     nothing reads.
+3v. ✅ **SHARED OPERATION ON ONE HOST — ADR-0007 + the cross-host DB guard** 2026-09-02. One
+   commit, `90f2887`, **on branch `config-toml-and-nvd-upload-targets`, not `main`, NOT PUSHED.**
+   730 → **745 tests green**; lint clean. *(Not steward-supervised; summarised from the commit
+   message and `docs/adr/0007-shared-operations-on-one-host.md`, both read in full.)*
+   - **The decision, and why the obvious answer was wrong.** Several people need to operate sluice
+     on CHTC. The obvious route was Plan C, and **ADR-0007 records it as the wrong one**: the API
+     adds *remote* access, not *multi-user* access, and design §13 keeps authz out of scope — an
+     HTTP layer would have left access control exactly where it already was. §5 had already
+     specified the case: operators SSH into the one host the daemon runs on.
+   - ⚠️ **The hazard this closes had been open since the daemon was written.** The daemon runs in
+     a screen session on a login node while the state file lives on shared home (CHTC has no
+     scratch, and node-local storage would lose run history on reboot — so §5's "local disk, not a
+     share" cannot be followed without trading corruption risk for guaranteed data loss). Nothing
+     stopped a colleague on a *different* login node becoming a second NFS client on a WAL
+     database. **`fcntl.flock` cannot see this — it is per-machine**, so a second daemon on
+     another node takes its own lock and both run against the same file. Invisible while one host
+     was in use.
+   - The daemon writes its hostname to `<state_file>.host` at every startup; `assert_daemon_host`
+     refuses commands from any other machine and names the one to go to. It runs *before* the lock
+     is taken, so it refuses a second daemon across nodes too. Placed at `_state_file` in the CLI,
+     the one choke point every DB-touching command already passes through.
+   - **The claim is a plain file BESIDE the database, not a `poller_metadata` row** — load-bearing.
+     Reading a metadata row means opening SQLite, which creates the WAL `-shm` segment, which is
+     **the exact cross-host act being prevented**. A guard that must open the database to decide
+     whether the database may be opened is not a guard. Pinned by a test that refuses correctly
+     against a state file full of garbage.
+   - `sluice setup --shared-group GROUP` widens the config (0640) and the state directory (setgid
+     2770 — not optional, since SQLite creates `-wal`/`-shm` beside the file and without setgid
+     the *second* operator fails, intermittently). **`secrets/` stays 0700**: clearing a quarantine
+     never needs the rsync password or the LabKey key, only the daemon does, and that asymmetry is
+     what makes widening safe at all.
+   - **`--actor` removed, not ignored.** It accepted any string — harmless with one writer, fake
+     evidence the moment several can write, and a trail naming who *claimed* to act is worse than
+     no trail because it reads as authoritative. A script still passing it now fails loudly.
+   - 📌 **PLAN C IS EFFECTIVELY CLOSED WITHOUT BEING BUILT — record it as deliberately unbuilt,
+     not pending.** Its three justifications are gone: the CLI already talks to the database and
+     to `control` directly (plan 15 §9, entry 3p), the heartbeat landed in `2c7eb58` (3w), and
+     ADR-0007 removed the multi-user case. The only content left under that heading is a FastAPI
+     service for operating sluice from a laptop without SSHing to CHTC — **which nobody has
+     asked for**. ADR-0007 keeps that justification alive and notes that when it is built the
+     actor must come from the transport, never from a flag. §6 and §7 still list Plan C as the
+     next phase; treat that as superseded by this entry.
+   - Resolved: **E1** (daemon supervision — screen, recorded in ADR-0007).
+3w. ✅ **DAEMON LIVENESS IN `sluice status`** 2026-09-02. Two commits — `2c7eb58` *(status: report
    daemon liveness from the lock, not the pause flag)* and `f50fc4e` *(docs: tell operators how to
    run the daemon and check it is alive)* — **on branch `config-toml-and-nvd-upload-targets`, not
    `main`, not pushed.** 747 tests green, lint clean, verified by the steward before each commit.
-   ⚠️ **This entry is written against a gap in the ledger.** Four commits between 3r and here are
-   unrecorded — `198ec64`, `0bc8858`, `9f91cee`, `90f2887` — and the same branch carries them. The
-   steward did not supervise them and declined to summarise them rather than invent history; §9
-   remains stamped 2026-07-31 for the same reason. **Naming them so the gap is visible: a reader
-   reconciling this file against `git log` should expect four commits it does not explain.**
+   ~~⚠️ **This entry is written against a gap in the ledger.** Four commits between 3r and here
+   are unrecorded — `198ec64`, `0bc8858`, `9f91cee`, `90f2887`.~~ → **GAP CLOSED 2026-09-02: they
+   are now entries 3s, 3t, 3u and 3v**, and §9 is restamped. Written from Will's summaries plus
+   each commit's own message and ADR-0007; 3u and 3v were not steward-supervised and say so.
+   **The original refusal stands as the right call** — the steward declined to summarise them
+   while it had nothing but a shortlog to go on, and named the gap instead of papering over it.
+   This entry keeps its warning visible for the same reason: a ledger that hides its holes is
+   worse than one that points at them.
    - **The `daemon` line answered the wrong question.** It rendered the *pause flag* and printed a
      green "running" whether or not a daemon existed. Nothing supervises the daemon (**errata E1**),
      so after a reboot it is simply gone — and the one line an operator would trust said everything
