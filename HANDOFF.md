@@ -50,6 +50,13 @@ ships its own (download → 008, checksum → 009, …). **Next: the `download` 
 NOT Globus). python-poller keeps running untouched throughout; sluice stays observe-only until
 Plan A+B reach parity.
 
+**PUBLICATION STATE (verified 2026-09-02).** There IS a git remote: `origin` =
+`git@github.com:wkgardner/sluice.git`, and **`main` tracks `origin/main` at `0bc8858`**.
+Everything through `0bc8858` is published. **The current branch
+`config-toml-and-nvd-upload-targets` is NOT** — `9f91cee`, `90f2887`, `2c7eb58`, `f50fc4e` and
+`d832e09` exist only in this working copy. Older entries in this file that say "no git remote
+configured" are **stale**; see §4.3 before planning around them.
+
 ---
 
 ## 2. Two environments (critical context)
@@ -64,9 +71,15 @@ in before acting.
 | **Production** | `/home/wkgardner/python-poller` (CHTC) | **LIVE. DO NOT DISTURB.** Last poll 2026-07-09; 69 runs; dirty working tree. sluice is additive; python-poller is never modified as part of this work. |
 
 **Sync direction has flipped.** The 2026-07-17 handoff had CHTC as the working session; as of
-2026-07-20 macOS carries the bootstrap, the agent team, and the hooks. Until a shared git remote
-exists, **sync macOS → CHTC**, not the reverse. Note that `.claude/` (agents, hooks, settings) is
-part of what must be synced — the production/secrets hook only protects the copy it is installed in.
+2026-07-20 macOS carries the bootstrap, the agent team, and the hooks. **Sync macOS → CHTC**, not
+the reverse. Note that `.claude/` (agents, hooks, settings) is part of what must be synced — the
+production/secrets hook only protects the copy it is installed in, and `.claude/` is **not** in
+the remote, so cloning from `origin` does not carry it.
+
+**The shared remote now exists** (`origin`, §4.3), so CHTC can `git clone`/`git pull` for
+everything that is tracked rather than being rsynced. That covers `main` through `0bc8858` only;
+the current branch is unpublished, and `notes/`, `specs/`, `docs/dev-cycle/` and `.claude/`
+remain untracked by design and still have to move out of band.
 
 ---
 
@@ -137,6 +150,31 @@ control-core specs" line is retired entirely: they were never on disk in any for
 12. **`agentic-workflow/` is not in the macOS python-poller** (checked). Storing build tooling
     inside the live production repo also sits awkwardly against guardrail §8; the agents now live in
     `sluice/.claude/agents/` where they are registered and dispatchable.
+
+### 4.3 — 2026-09-02 (macOS session)
+
+13. **⛔→✅ THE "NO GIT REMOTE" CLAIM IS FALSE AND HAS BEEN FOR A MONTH.** `origin` =
+    `git@github.com:wkgardner/sluice.git` exists, `main` tracks `origin/main`, and **all of
+    `main` through `0bc8858` is published**. The remote was added around 2026-08-01 without a
+    handoff update; entry 3o noticed it and flagged the earlier entries stale, but §2 and §10
+    item 4 were never corrected, so the file kept telling a cold reader that the entire history
+    lived on one laptop. **That is the wrong risk model to plan against** — it makes a
+    single-machine backup look urgent when it is done, and it makes "rsync macOS → CHTC" look
+    like the only sync route when `git clone` now covers everything tracked.
+    - **Dated ledger entries are NOT rewritten.** The "no git remote configured" standing item in
+      3d, 3e, 3g, 3h, 3i, 3j and 3n was *true on the date each was written*. Editing them would
+      trade one false record for another. They are superseded by this entry; read them as
+      history, not as current state.
+    - **What is corrected in place** is every statement that a reader would act on *now*: §1
+      (publication state), §2 (sync route), the 3j "front line" bullet, and §10 item 4.
+14. **The current branch is unpublished, and that is the live gap.**
+    `config-toml-and-nvd-upload-targets` carries five commits that exist nowhere else —
+    `9f91cee`, `90f2887`, `2c7eb58`, `f50fc4e`, `d832e09`. Two of them (`9f91cee`, `90f2887`)
+    contain a production bug fix and a data-corruption guard. **The one-machine risk did not
+    disappear; it moved from the whole history to this branch.** No push has been authorized, so
+    it stays that way until Will asks for one.
+15. **Suite and lint verified independently at this correction:** `pixi run test` → **747
+    passed**, `pixi run lint` → clean, both re-run by the steward rather than taken on report.
 
 ---
 
@@ -847,8 +885,9 @@ actually protected.
    **All nine Plan A subsystems are built, committed, and green; this handoff commit is
    tagged `plan-a-rc1`** (annotated) — release candidate pending Plan B production gates.
    **Next horizon: Plan B (production gates).** The standing items are now the front line:
-   - **No git remote** — the entire Plan A history exists on one machine (the real fix for
-     the sync problem too; see item 4).
+   - ~~**No git remote** — the entire Plan A history exists on one machine (the real fix for
+     the sync problem too; see item 4).~~ → **SUPERSEDED 2026-09-02 (§4.3): `origin` exists and
+     all of Plan A is published.** True when written on 2026-07-30; do not plan against it.
    - **FIVE gitignored ADRs** (`docs/adr/0001`–`0005`) that the commits cite by name but
      history does not contain (the 3a allowlist decision).
    - `docs/dev-cycle/` untracked (`01-db/` through `07-audit/`; none for 08/09 — visual docs
@@ -1197,8 +1236,20 @@ actually protected.
    **Next, unchanged from 3r: doctor increments B and C.** Note **C = the daemon startup gate**
    now overlaps this work — `is_daemon_running` is the probe C would need, and C should use it
    rather than grow a second one.
-4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
-   `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
-   Confirm the design of record is byte-identical across copies while doing it.
+4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
+   is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
+   remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`
+   `main` for everything tracked. What git does **not** carry, and what still has to move out of
+   band: `.claude/` (agents, hooks, settings — the guardrail hooks protect only the copy they
+   live in), the subsystem map, `notes/`, `specs/`, and `docs/dev-cycle/`. Confirm the design of
+   record is byte-identical across copies while doing it.
+   **Note the branch gap:** a CHTC clone gets `main` at `0bc8858` and therefore does **not** get
+   the TOML config, the NVD upload keys, the one-host DB guard, or the daemon liveness check —
+   those are the five unpublished commits on `config-toml-and-nvd-upload-targets` (§4.3 item 14).
+   Syncing CHTC before that branch is published would install a sluice missing its most recent
+   production fix.
+   **Drift status: UNKNOWN, not clean.** CHTC was last observed 2026-07-17 (§9) and this session
+   ran entirely on macOS with no access to the CHTC working copy (§2), so the §2/§3 drift could
+   not be checked here and nothing in this update should be read as having cleared it.
 5. Throughout: python-poller keeps running untouched; sluice stays observe-only until Plan A+B reach
    parity and the drain completes.
