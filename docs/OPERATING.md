@@ -207,6 +207,53 @@ for you.
 
 ---
 
+## Running the daemon
+
+Nothing in sluice moves data except the daemon. The other commands only change stored
+state; the daemon is what notices and acts.
+
+It runs in the foreground until interrupted, and **nothing supervises it** — no service, no
+restart-on-boot. So it lives in a `screen` or `tmux` session:
+
+```bash
+screen -S sluice          # or: tmux new -s sluice
+sluice daemon
+```
+
+Detach with `Ctrl-A D` in screen, or `Ctrl-B D` in tmux. Come back with:
+
+```bash
+screen -r sluice          # or: tmux attach -t sluice
+```
+
+### After a reboot, sluice does not come back on its own
+
+**You have to start it again.** There is no service, and nothing will remind you. If runs
+stop being picked up and nothing else explains it, this is the first thing to check.
+
+### How to tell whether it is actually running
+
+`sluice status` tells you, on its first line:
+
+```
+daemon    running, last look 2026-08-03T14:22:07+00:00
+daemon    NOT RUNNING — start it: sluice daemon          ← red
+```
+
+That is a real check, not a guess — it asks the operating system who holds the daemon's lock
+file. **This only works from the machine the daemon runs on**, which is where you are anyway,
+because every sluice command is refused from anywhere else.
+
+The timestamp is the last time the daemon *began* a look. It being old is not by itself a
+problem: an NVD run takes hours, and during one the daemon is alive and working rather than
+looping. `running` with an old timestamp and an active run is normal. `running` with an old
+timestamp and nothing in flight is worth asking about.
+
+Starting a second daemon on the same machine is safe: it fails immediately on the lock file
+rather than racing the first one.
+
+---
+
 ## Letting other people operate sluice
 
 By default an installation belongs to one person: the config and credentials are
@@ -265,7 +312,7 @@ sluice status
 
 ```
 pipeline profile  production-v3.1
-daemon            running
+daemon            running, last look 2026-08-03T14:22:07+00:00
 
 RUN             EXPERIMENT  OUTCOME      LIFECYCLE  NOTE
 SEQ_20260728_A  4468        completed    active
