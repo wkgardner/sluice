@@ -1148,6 +1148,55 @@ actually protected.
    connections, credentials accepted by their services, a cheap read per endpoint, plus the source
    manifest visibility check added in `6ef04e3`, and the file-vs-directory schema flag `PATH_EXISTS`
    needs and does not have). **C** = the daemon startup gate. Neither is started.
+3s. ✅ **DAEMON LIVENESS IN `sluice status`** 2026-09-02. Two commits — `2c7eb58` *(status: report
+   daemon liveness from the lock, not the pause flag)* and `f50fc4e` *(docs: tell operators how to
+   run the daemon and check it is alive)* — **on branch `config-toml-and-nvd-upload-targets`, not
+   `main`, not pushed.** 747 tests green, lint clean, verified by the steward before each commit.
+   ⚠️ **This entry is written against a gap in the ledger.** Four commits between 3r and here are
+   unrecorded — `198ec64`, `0bc8858`, `9f91cee`, `90f2887` — and the same branch carries them. The
+   steward did not supervise them and declined to summarise them rather than invent history; §9
+   remains stamped 2026-07-31 for the same reason. **Naming them so the gap is visible: a reader
+   reconciling this file against `git log` should expect four commits it does not explain.**
+   - **The `daemon` line answered the wrong question.** It rendered the *pause flag* and printed a
+     green "running" whether or not a daemon existed. Nothing supervises the daemon (**errata E1**),
+     so after a reboot it is simply gone — and the one line an operator would trust said everything
+     was fine. Now **two facts, because either alone misleads**: liveness from the lock
+     (`is_daemon_running` probes the flock non-blockingly and asks the OS who holds it — a real
+     check, not an inference), and progress from a heartbeat (`daemon_last_look` stamped into
+     `poller_metadata` at the top of each cycle, in its own transaction so a later gate failure
+     cannot roll it back). **No migration** — that table has existed since 002. Pause moves to its
+     own row. Renders `running, last look <ts>` or a red `NOT RUNNING — start it: sluice daemon`.
+   - **Why both, and why a heartbeat alone would have been worse than nothing.** NVD has no time
+     bound (⚑F), so a live daemon inside an hours-long gate shows a stale timestamp and would read
+     as dead. That is the cry-wolf failure that trains operators to ignore the line. The lock
+     separates *working* from *gone*; the heartbeat separates *working* from *wedged*.
+   - **Machine-local by design, and that is sufficient.** `flock` cannot see another node, but every
+     operator is on the daemon's host already (**ADR-0007**), and `assert_daemon_host` refuses
+     commands from anywhere else.
+   - **Twin killed at the source:** `daemon_lock_path()` extracted so `run_forever` and the probe
+     share one derivation. Two copies would let holder and probe disagree about which file they
+     mean, and the probe would then report "not running" **forever** — a monitor that is
+     confidently wrong. Same class as the `default_home()` twin in 3r.
+   - **The probe opens the lock `"rb"`, never `"w"`** — a status command must not create or truncate
+     the file the single-instance guarantee rests on — and releases immediately on acquiring, so it
+     can never become the thing that blocks a daemon from starting. Stays inside `daemon.py`'s
+     pinned closed import surface (`pathlib`, not `os`). The liveness read happens in the **CLI, not
+     `control`**: `daemon` imports `control`, so `control` cannot import `daemon` back, and the CLI
+     is already the composition root that sees both.
+   - **`docs/OPERATING.md` gains "Running the daemon"** — screen/tmux, detach and reattach, and the
+     blunt statement the section exists for: **after a reboot sluice does not come back on its own.**
+     Nothing will remind anyone; it is the first thing to check when runs stop being picked up.
+   - **Steward refused the doc on the first pass** — not for a secret this time (it added no host,
+     account or path; the 3r sanitisation held). The worked example read `daemon  not paused`, a
+     string the CLI cannot emit, left over from an earlier design of this change that was replaced
+     before it landed. **Exactly the drift the commit exists to kill, in the most-copied file in the
+     repo**, and no test covers the guide, so it would have sat wrong indefinitely. Held, cited
+     `file:line`, did not self-correct; author swept the whole file against the three strings
+     `_daemon_health` can actually emit, then it committed clean. **Lesson: the pre-commit gate
+     earns its keep on documentation drift, not only on secrets.**
+   **Next, unchanged from 3r: doctor increments B and C.** Note **C = the daemon startup gate**
+   now overlaps this work — `is_daemon_running` is the probe C would need, and C should use it
+   rather than grow a second one.
 4. **Sync macOS → CHTC** (or stand up a shared git remote, which is the real fix). Must include
    `.claude/` — the guardrail hooks protect only the copy they live in — plus the subsystem map.
    Confirm the design of record is byte-identical across copies while doing it.
