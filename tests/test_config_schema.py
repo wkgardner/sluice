@@ -7,15 +7,33 @@ predicate-twin guard exists to prevent.
 """
 
 import ast
-import json
 import pathlib
 
 import pytest
 
+from sluice.config import parse_config_text
 from sluice.config.schema import CONFIG_FIELDS, FieldKind, ProbeKind
-from sluice.config.setup import apply_plan, plan_setup
+from sluice.config.setup import apply_plan, plan_setup, render_config_toml
 
 SOURCE_ROOT = pathlib.Path(__file__).resolve().parent.parent / "sluice"
+
+
+def read_config(config_path) -> dict:
+    """The config file as flat keys, the same way every sluice command reads it."""
+    return parse_config_text(config_path.read_text(encoding="utf-8"), str(config_path))
+
+
+def write_config(config_path, values) -> None:
+    """Write a flat mapping back out in the form setup would have produced.
+
+    Keys the schema does not declare are passed through as unrecognised, so a
+    test can plant one and see it survive — which is the behaviour several of
+    these tests exist to pin.
+    """
+    known = {field.name for field in CONFIG_FIELDS}
+    unknown = tuple(key for key in values if key not in known)
+    config_path.write_text(render_config_toml(values, unknown), encoding="utf-8")
+
 
 # Any name whose subscript or .get() counts as a config read. `config` is the
 # parameter name used throughout; the others are what it gets bound to locally.
@@ -157,7 +175,7 @@ def test_a_fresh_install_creates_the_home_layout(tmp_path):
     result = apply_plan(plan_setup(home=tmp_path / "sluice-home"))
 
     home = tmp_path / "sluice-home"
-    assert (home / "config.json").is_file()
+    assert (home / "config.toml").is_file()
     for expected in ("secrets", "state", "logs", "nvd-launch"):
         assert (home / expected).is_dir(), f"{expected} was not created"
     assert result.database_initialised
@@ -205,10 +223,10 @@ def test_secret_files_are_created_empty_and_owner_only(tmp_path):
 
 
 def test_the_config_file_is_owner_only(tmp_path):
-    """config.json is 0600 — it names credential paths and infrastructure."""
+    """config.toml is 0600 — it names credential paths and infrastructure."""
     apply_plan(plan_setup(home=tmp_path / "h"))
 
-    assert oct((tmp_path / "h" / "config.json").stat().st_mode)[-3:] == "600"
+    assert oct((tmp_path / "h" / "config.toml").stat().st_mode)[-3:] == "600"
 
 
 def test_operator_supplied_keys_are_reported_not_invented(tmp_path):
@@ -241,15 +259,15 @@ def test_re_running_never_overwrites_an_existing_value(tmp_path):
     """
     home = tmp_path / "h"
     apply_plan(plan_setup(home=home))
-    config_path = home / "config.json"
-    tuned = json.loads(config_path.read_text())
+    config_path = home / "config.toml"
+    tuned = read_config(config_path)
     tuned["parallel_downloads"] = 16
     tuned["remote_host"] = "seq.example.edu"
-    config_path.write_text(json.dumps(tuned), encoding="utf-8")
+    write_config(config_path, tuned)
 
     apply_plan(plan_setup(home=home))
 
-    after = json.loads(config_path.read_text())
+    after = read_config(config_path)
     assert after["parallel_downloads"] == 16
     assert after["remote_host"] == "seq.example.edu"
 
@@ -258,10 +276,10 @@ def test_an_upgrade_adds_only_the_missing_keys(tmp_path):
     """A key introduced by a new release is added; everything else is left alone."""
     home = tmp_path / "h"
     apply_plan(plan_setup(home=home))
-    config_path = home / "config.json"
-    without_new_key = json.loads(config_path.read_text())
+    config_path = home / "config.toml"
+    without_new_key = read_config(config_path)
     del without_new_key["nvd_launch_base"]
-    config_path.write_text(json.dumps(without_new_key), encoding="utf-8")
+    write_config(config_path, without_new_key)
 
     plan = plan_setup(home=home)
 
@@ -278,18 +296,16 @@ def test_keys_this_version_does_not_know_are_kept_and_reported(tmp_path):
     """
     home = tmp_path / "h"
     apply_plan(plan_setup(home=home))
-    config_path = home / "config.json"
-    config = json.loads(config_path.read_text())
+    config_path = home / "config.toml"
+    config = read_config(config_path)
     config["globus_destination_root"] = "/somewhere"
-    config_path.write_text(json.dumps(config), encoding="utf-8")
+    write_config(config_path, config)
 
     plan = plan_setup(home=home)
     apply_plan(plan)
 
     assert "globus_destination_root" in plan.unknown_keys
-    assert (
-        json.loads(config_path.read_text())["globus_destination_root"] == "/somewhere"
-    )
+    assert read_config(config_path)["globus_destination_root"] == "/somewhere"
 
 
 def test_an_unparseable_config_is_refused_rather_than_clobbered(tmp_path):
@@ -300,11 +316,31 @@ def test_an_unparseable_config_is_refused_rather_than_clobbered(tmp_path):
     """
     home = tmp_path / "h"
     home.mkdir()
+    (home / "config.toml").write_text("this is [not toml", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Refusing to overwrite"):
+        apply_plan(plan_setup(home=home))
+
+    assert "not toml" in (home / "config.toml").read_text()
+
+
+def test_an_unparseable_json_config_is_refused_rather_than_migrated(tmp_path):
+    """A broken pre-TOML config stops the migration instead of emptying it.
+
+    The dangerous version of the same failure: without this, a ``config.json``
+    that will not parse plans as "no existing values", and setup writes a
+    pristine ``config.toml`` beside it. The install then looks freshly set up
+    while every value the operator had is stranded in a file nothing reads —
+    quieter, and therefore worse, than refusing.
+    """
+    home = tmp_path / "h"
+    home.mkdir()
     (home / "config.json").write_text("{ this is not json", encoding="utf-8")
 
     with pytest.raises(ValueError, match="Refusing to overwrite"):
         apply_plan(plan_setup(home=home))
 
+    assert not (home / "config.toml").exists()
     assert "not json" in (home / "config.json").read_text()
 
 
@@ -312,11 +348,11 @@ def test_re_running_is_idempotent(tmp_path):
     """Running setup twice in a row changes nothing the second time."""
     home = tmp_path / "h"
     apply_plan(plan_setup(home=home))
-    first = (home / "config.json").read_text()
+    first = (home / "config.toml").read_text()
 
     apply_plan(plan_setup(home=home))
 
-    assert (home / "config.json").read_text() == first
+    assert (home / "config.toml").read_text() == first
 
 
 def test_a_filled_in_secret_is_not_emptied_by_a_re_run(tmp_path):
@@ -331,13 +367,126 @@ def test_a_filled_in_secret_is_not_emptied_by_a_re_run(tmp_path):
     assert token_file.read_text() == "xoxb-not-a-real-token"
 
 
+def test_a_json_install_is_migrated_and_the_old_file_is_left_alone(tmp_path):
+    """Values move into config.toml; config.json stays exactly where it was.
+
+    Leaving it is what makes the migration reversible with no backup mechanism
+    of its own — the old file *is* the backup. Deleting it would also mean an
+    operator who runs setup on the wrong home has nothing to go back to.
+    """
+    home = tmp_path / "h"
+    home.mkdir()
+    legacy = home / "config.json"
+    legacy.write_text(
+        '{"parallel_downloads": 16, "remote_host": "seq.example.edu"}',
+        encoding="utf-8",
+    )
+
+    plan = plan_setup(home=home)
+    apply_plan(plan)
+
+    assert plan.migrated_from == legacy
+    # Not an upgrade: nothing is being overwritten, so the CLI neither asks nor
+    # takes a backup.
+    assert not plan.is_upgrade
+    migrated = read_config(home / "config.toml")
+    assert migrated["parallel_downloads"] == 16
+    assert migrated["remote_host"] == "seq.example.edu"
+    assert legacy.read_text(encoding="utf-8").startswith('{"parallel_downloads"')
+
+
+def test_the_toml_wins_once_both_files_exist(tmp_path):
+    """After a migration, the stale config.json is ignored rather than re-read.
+
+    An operator who edits the old file out of habit must not have those edits
+    silently win — or, worse, silently lose to the TOML with no indication which
+    file the daemon actually read.
+    """
+    home = tmp_path / "h"
+    home.mkdir()
+    (home / "config.json").write_text('{"parallel_downloads": 2}', encoding="utf-8")
+    apply_plan(plan_setup(home=home))
+    write_config(
+        home / "config.toml",
+        {**read_config(home / "config.toml"), "parallel_downloads": 16},
+    )
+
+    plan = plan_setup(home=home)
+
+    assert plan.migrated_from is None
+    assert plan.existing["parallel_downloads"] == 16
+
+
+def test_the_written_config_explains_every_key_it_writes(tmp_path):
+    """Each key is preceded by its schema help text, in a named section.
+
+    The whole reason for TOML over JSON. If the file stops explaining itself the
+    format change bought nothing, and the explanation has to come from
+    ``ConfigField.help`` rather than a second copy — doctor prints the same text,
+    and two copies of an explanation is one copy that goes stale.
+    """
+    apply_plan(plan_setup(home=tmp_path / "h"))
+
+    written = (tmp_path / "h" / "config.toml").read_text(encoding="utf-8")
+
+    assert "[nvd_labkey_upload]" in written
+    assert "[detection]" in written
+    # Help text wraps across several comment lines, so un-wrap before comparing:
+    # strip each line's "#" and collapse the whole comment body to one line.
+    commentary = " ".join(
+        line.lstrip("#").strip()
+        for line in written.splitlines()
+        if line.startswith("#")
+    )
+    commentary = " ".join(commentary.split())
+    for field in CONFIG_FIELDS:
+        assert " ".join(field.help.split()) in commentary, field.name
+
+
+def test_a_key_is_read_from_whatever_table_it_sits_in(tmp_path):
+    """Tables are organisation only — moving a key between them changes nothing.
+
+    Pins the flattening contract. Without it an operator tidying their config by
+    moving a key into a section that reads better would silently unset it.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[somewhere_else]\nparallel_downloads = 16\n\n"
+        '[another]\nremote_host = "seq.example.edu"\n',
+        encoding="utf-8",
+    )
+
+    loaded = read_config(config_path)
+
+    assert loaded == {"parallel_downloads": 16, "remote_host": "seq.example.edu"}
+
+
+def test_the_same_key_in_two_tables_is_an_error_not_a_coin_flip(tmp_path):
+    """A key set twice is refused, naming both sections.
+
+    Table names are discarded, so duplicates across sections are the one way the
+    file can say two things. Letting the last one win would make the config mean
+    something no reader of the file could predict.
+    """
+    from sluice.config import ConfigError
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[detection]\nparallel_downloads = 4\n\n[download]\nparallel_downloads = 16\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="parallel_downloads"):
+        read_config(config_path)
+
+
 def test_the_written_config_loads_through_the_normal_loader(tmp_path):
     """What setup writes is what ``load_config`` reads — no separate format."""
     from sluice.config import load_config
 
     apply_plan(plan_setup(home=tmp_path / "h"))
 
-    loaded = load_config(str(tmp_path / "h" / "config.json"))
+    loaded = load_config(str(tmp_path / "h" / "config.toml"))
     assert loaded["state_file"].endswith("sluice_state.db")
 
 
@@ -356,15 +505,15 @@ def test_field_kinds_are_used_consistently():
 
 
 def test_the_example_config_matches_the_schema():
-    """``config.example.json`` names exactly the schema's keys.
+    """``config.example.toml`` names exactly the schema's keys.
 
     The example is what someone reads to understand the config surface before
     they ever run setup. Before this guard it carried 34 keys nothing read —
     leftovers from the original design of record — which would have sent an
     operator configuring values that have no effect.
     """
-    example_path = SOURCE_ROOT.parent / "config.example.json"
-    example_keys = set(json.loads(example_path.read_text(encoding="utf-8")))
+    example_path = SOURCE_ROOT.parent / "config.example.toml"
+    example_keys = set(read_config(example_path))
 
     assert example_keys == {field.name for field in CONFIG_FIELDS}
 
@@ -384,7 +533,7 @@ def test_setup_writes_every_key_including_the_ones_it_cannot_fill(tmp_path):
     home = tmp_path / "h"
     apply_plan(plan_setup(home=home))
 
-    written = json.loads((home / "config.json").read_text(encoding="utf-8"))
+    written = read_config(home / "config.toml")
 
     missing = sorted({field.name for field in CONFIG_FIELDS} - set(written))
     assert not missing, f"setup left these keys out of the config: {missing}"
@@ -394,3 +543,77 @@ def test_setup_writes_every_key_including_the_ones_it_cannot_fill(tmp_path):
     for field in CONFIG_FIELDS:
         if field.required and field.default is None and field.home_relative is None:
             assert written[field.name] == "", field.name
+
+
+# ---------------------------------------------------------------------------
+# Shared-operations mode.
+# ---------------------------------------------------------------------------
+
+
+def _a_group_this_user_belongs_to():
+    """The NAME of a real group the test user is in, or None if there is none.
+
+    A name, not a gid: setup takes what an operator would type after
+    ``--shared-group``, and resolving it is part of what is being tested.
+    """
+    import grp
+    import os
+
+    for gid in os.getgroups():
+        try:
+            return grp.getgrgid(gid).gr_name
+        except KeyError:
+            continue
+    return None
+
+
+def test_shared_mode_opens_the_config_and_state_to_the_group(tmp_path):
+    """The two things a second operator needs, and nothing more.
+
+    They must read the config (to find the database at all) and write the state
+    directory (SQLite creates -wal/-shm beside the file). Secrets are the point
+    of the exercise: someone running `hold` never needs the rsync password, so
+    widening the config must not widen those.
+    """
+    import stat
+
+    group = _a_group_this_user_belongs_to()
+    if group is None:
+        pytest.skip("no supplementary group available to test with")
+    home = tmp_path / "h"
+
+    apply_plan(plan_setup(home=home), shared_group=group)
+
+    def mode(path):
+        return stat.S_IMODE(path.stat().st_mode)
+
+    assert mode(home / "config.toml") == 0o640, "the group must be able to read it"
+    state_dir = home / "state"
+    assert mode(state_dir) & 0o070 == 0o070, "the group must be able to write here"
+    assert mode(state_dir) & stat.S_ISGID, (
+        "setgid, or SQLite's -wal and -shm files are created owned by whoever "
+        "ran the command and the next operator cannot write them"
+    )
+    assert mode(home / "secrets") == 0o700, "credentials stay owner-only"
+
+
+def test_the_default_install_stays_owner_only(tmp_path):
+    """Without the flag nothing widens — a single-user install is the default."""
+    import stat
+
+    home = tmp_path / "h"
+
+    apply_plan(plan_setup(home=home))
+
+    assert stat.S_IMODE((home / "config.toml").stat().st_mode) == 0o600
+    assert stat.S_IMODE((home / "secrets").stat().st_mode) == 0o700
+
+
+def test_an_unusable_group_is_refused_with_a_clear_message(tmp_path):
+    """A group that does not exist fails as a sentence, not a traceback.
+
+    Getting the group wrong is the likeliest mistake here, and it happens on a
+    cluster where the operator may not know which groups they are in.
+    """
+    with pytest.raises(ValueError, match="no-such-group"):
+        apply_plan(plan_setup(home=tmp_path / "h"), shared_group="no-such-group")

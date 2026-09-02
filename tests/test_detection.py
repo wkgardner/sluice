@@ -128,7 +128,10 @@ REMOTE_ARGV = [
     "--include=*.sha256",
     "--exclude=*",
     "-r",
-    "seq@sequencer.example.org:.",
+    # ``./`` not ``.``: the source is normalized to end in a slash so rsync lists
+    # the directory's contents. Equivalent for ``.``, load-bearing for any other
+    # path an operator writes.
+    "seq@sequencer.example.org:./",
 ]
 
 LOCAL_ARGV = [
@@ -186,6 +189,36 @@ def test_local_mode_command_lists_directory_contents():
 
     with pytest.raises(KeyError):
         build_listing_command({"local_source_dir": ""})
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected_source"),
+    [
+        ("deliveries", "seq@sequencer.example.org:deliveries/"),
+        ("deliveries/", "seq@sequencer.example.org:deliveries/"),
+        ("/srv/deliveries", "seq@sequencer.example.org:/srv/deliveries/"),
+        (".", "seq@sequencer.example.org:./"),
+    ],
+)
+def test_remote_source_always_lists_contents_not_the_directory_entry(
+    tmp_path, configured, expected_source
+):
+    """The remote source ends in exactly one slash, whatever the operator wrote.
+
+    ``rsync --list-only <dir>`` describes the directory ENTRY; ``<dir>/`` lists
+    its CONTENTS. Without the slash sluice detects one run named after the
+    source directory instead of the runs inside it — a silent mis-detection, not
+    a crash, so nothing downstream notices. The local branch has always appended
+    the slash itself; the remote branch interpolated the operator's value
+    verbatim, so the only thing standing between an operator and this bug was
+    them reading a doc. Appending is idempotent: an operator who followed the
+    doc gets the same command as one who did not.
+    """
+    config = _remote_config(tmp_path)
+    config["remote_source_path"] = configured
+    argv, _ = build_listing_command(config)
+
+    assert argv[-1] == expected_source
 
 
 def test_is_local_mode_is_a_presence_check_not_a_value_check():

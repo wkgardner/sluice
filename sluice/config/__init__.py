@@ -1,7 +1,7 @@
 """Config loading.
 
-Real infrastructure values live only in a gitignored ``config.json``; the committed
-``config.example.json`` is placeholders only. A missing required key is a load-time error, never a
+Real infrastructure values live only in a gitignored ``config.toml``; the committed
+``config.example.toml`` is placeholders only. A missing required key is a load-time error, never a
 silent production fallback.
 
 **This loader deliberately does not validate the key set.** It finds, reads, and parses — that is
@@ -13,21 +13,46 @@ A central required-keys list here would be a second authority over which keys ma
 drift from the code that reads them the first time a gate is added. Validating that a whole
 deployment is *workable* is a different job — it belongs in ``sluice doctor`` (errata E2), which
 checks that configured values resolve and are reachable, not merely that they are present.
+
+## TOML, and why tables are flattened away
+
+The config is TOML so it can carry section headers and a one-line explanation above every key —
+the file an operator edits should say what each key is for, and strict JSON cannot hold a comment.
+Reading is ``tomllib`` from the standard library; writing is ``sluice.config.setup``'s own emitter,
+so neither direction costs a dependency.
+
+**Tables are organisation, not structure.** ``[nvd]`` exists to group keys visually and is
+discarded at load: ``nvd_repo_dir`` under ``[nvd]`` arrives as ``config["nvd_repo_dir"]``, exactly
+the name every gate already subscripts and exactly the name ``sluice doctor`` prints. The
+alternative — nesting for real, or stripping the group prefix — would mean doctor naming a key the
+operator cannot find by searching the file for it. A key is therefore free to sit in any table, or
+none; only its own name matters.
+
+## The JSON predecessor
+
+Installs created before the TOML move have a ``config.json``. ``resolve_config_path`` still finds
+one when no ``config.toml`` sits beside it, and ``load_config`` parses either by suffix, so an
+upgrade does not break every command before the operator gets to ``sluice setup``. Setup writes the
+TOML and leaves the JSON where it is.
 """
 
 import json
 import os
 import pathlib
+import tomllib
 
 __all__ = [
     "CONFIG_ENV_VAR",
     "DEFAULT_CONFIG_FILENAME",
     "DEFAULT_HOME",
     "HOME_ENV_VAR",
+    "LEGACY_CONFIG_FILENAME",
     "ConfigError",
     "default_home",
+    "flatten_tables",
     "is_unfilled_placeholder",
     "load_config",
+    "parse_config_text",
     "resolve_config_path",
 ]
 
@@ -37,7 +62,11 @@ CONFIG_ENV_VAR = "SLUICE_CONFIG"
 # Looked for in the working directory when neither --config nor the env var is
 # given. A named constant, never derived from the package's install location —
 # deriving paths from where the code happens to live is the errata A7/D2 trap.
-DEFAULT_CONFIG_FILENAME = "config.json"
+DEFAULT_CONFIG_FILENAME = "config.toml"
+
+# What installs created before the TOML move are called. Still found and still
+# parsed, so upgrading sluice does not break every command at once.
+LEGACY_CONFIG_FILENAME = "config.json"
 
 # The directory `sluice setup` creates and owns. It lives here rather than in
 # `setup`, because it is not setup's private business: `resolve_config_path` has
@@ -78,24 +107,40 @@ def is_unfilled_placeholder(value) -> bool:
     return isinstance(value, str) and value.startswith("<") and value.endswith(">")
 
 
+def _config_in(directory: pathlib.Path):
+    """An existing config in ``directory``, TOML first, or ``None``.
+
+    The legacy fallback is deliberately per-directory rather than global: an
+    operator who has run setup has a ``config.toml`` in the home and possibly a
+    stale ``config.json`` beside it, and the TOML must win there without a
+    ``config.json`` in the *working directory* being ignored.
+    """
+    for filename in (DEFAULT_CONFIG_FILENAME, LEGACY_CONFIG_FILENAME):
+        candidate = directory / filename
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def resolve_config_path(explicit_path=None) -> pathlib.Path:
     """Decide which config file to load, in precedence order.
 
-    ``--config`` beats ``$SLUICE_CONFIG`` beats ``./config.json`` beats
-    ``<sluice home>/config.json``.
+    ``--config`` beats ``$SLUICE_CONFIG`` beats ``./config.toml`` beats
+    ``<sluice home>/config.toml``, with a ``config.json`` accepted in either
+    directory when no ``config.toml`` sits beside it — an install that predates
+    the TOML move keeps working until its next ``sluice setup``.
 
-    The last step is what makes a normal install work: ``sluice setup`` writes
+    The home step is what makes a normal install work: ``sluice setup`` writes
     the config into the sluice home, so a resolver that stopped at the working
     directory sent every command looking somewhere setup never writes. The
-    working directory still wins when a ``config.json`` is actually there, which
-    keeps a repo checkout working without ``--config``; that step is therefore
-    the one place here that tests for existence, since an unconditional return
-    would make the home unreachable.
+    working directory still wins when a config is actually there, which keeps a
+    repo checkout working without ``--config``.
 
-    Otherwise the chosen path is returned whether or not it exists, so the caller
-    can report *which* path was tried. "No config at /etc/sluice/config.json" is
-    actionable in a way that "config not found" is not, and loading a different
-    config than intended is the most common real-world config failure.
+    When nothing exists anywhere, the home's ``config.toml`` is returned even
+    though it is absent, so the caller can report *which* path was tried. "No
+    config at /etc/sluice/config.toml" is actionable in a way that "config not
+    found" is not, and loading a different config than intended is the most
+    common real-world config failure.
 
     Args:
         explicit_path: the ``--config`` value, or ``None``.
@@ -108,25 +153,99 @@ def resolve_config_path(explicit_path=None) -> pathlib.Path:
     from_environment = os.environ.get(CONFIG_ENV_VAR)
     if from_environment:
         return pathlib.Path(from_environment)
-    in_working_directory = pathlib.Path(DEFAULT_CONFIG_FILENAME)
-    if in_working_directory.is_file():
+    in_working_directory = _config_in(pathlib.Path())
+    if in_working_directory is not None:
         return in_working_directory
-    return default_home() / DEFAULT_CONFIG_FILENAME
+    home = default_home()
+    return _config_in(home) or home / DEFAULT_CONFIG_FILENAME
+
+
+def flatten_tables(parsed: dict, source="the config") -> dict:
+    """Merge every TOML table's keys up to the top level, discarding table names.
+
+    Tables group keys for a human reading the file; the code reads flat names.
+    ``[nvd] nvd_repo_dir`` and a bare top-level ``nvd_repo_dir`` are therefore the
+    same key, which is what lets an operator move a key between sections — or
+    ignore sections entirely — without breaking anything.
+
+    Raises:
+        ConfigError: the same key appears in two places. Silently letting one win
+            would make the file say two things and the loader believe one, with
+            no way to tell which from the outside.
+    """
+    flattened: dict = {}
+    homes: dict[str, str] = {}
+
+    def absorb(mapping: dict, table: str) -> None:
+        for key, value in mapping.items():
+            if isinstance(value, dict):
+                absorb(value, key)
+                continue
+            if key in flattened:
+                raise ConfigError(
+                    f"{source} sets '{key}' twice — once under "
+                    f"[{homes[key]}] and again under [{table}]. Delete one; "
+                    f"table names are ignored, so both are the same setting."
+                )
+            flattened[key] = value
+            homes[key] = table
+
+    absorb(parsed, "the top level")
+    return flattened
+
+
+def parse_config_text(raw_text: str, source="the config", *, is_json=False) -> dict:
+    """Parse config text as TOML (or JSON), returning flat keys.
+
+    Split out from ``load_config`` because ``sluice setup`` reads an existing
+    config through the same two parsers, and a second copy of "which suffix means
+    which parser" is exactly how a writer and a reader come to disagree.
+
+    Args:
+        raw_text: the file's contents.
+        source: what to name in an error message — a path, usually.
+        is_json: parse as JSON rather than TOML. For pre-TOML installs.
+
+    Raises:
+        ConfigError: the text does not parse, is not a table/object, or sets one
+            key twice.
+    """
+    if is_json:
+        try:
+            parsed = json.loads(raw_text)
+        except json.JSONDecodeError as invalid:
+            raise ConfigError(f"{source} is not valid JSON: {invalid}") from invalid
+        if not isinstance(parsed, dict):
+            raise ConfigError(
+                f"{source} must contain a JSON object of config keys, got "
+                f"{type(parsed).__name__}"
+            )
+        return parsed
+
+    try:
+        parsed = tomllib.loads(raw_text)
+    except tomllib.TOMLDecodeError as invalid:
+        raise ConfigError(f"{source} is not valid TOML: {invalid}") from invalid
+    return flatten_tables(parsed, source)
 
 
 def load_config(explicit_path=None) -> dict:
     """Load and parse the config file, or raise ``ConfigError`` naming the path.
+
+    TOML, unless the path ends ``.json`` — an install that predates the TOML move
+    keeps working until its next ``sluice setup``. Either way the result is flat:
+    see ``flatten_tables``.
 
     Args:
         explicit_path: an explicit path to load; otherwise resolved by
             ``resolve_config_path``.
 
     Returns:
-        The parsed config as a plain dict.
+        The parsed config as a plain dict of flat keys.
 
     Raises:
-        ConfigError: the file is absent, unreadable, not valid JSON, or does not
-            contain a JSON object. Every message names the path.
+        ConfigError: the file is absent, unreadable, does not parse, or sets a
+            key twice. Every message names the path.
     """
     config_path = resolve_config_path(explicit_path)
     try:
@@ -140,14 +259,6 @@ def load_config(explicit_path=None) -> dict:
     except OSError as unreadable:
         raise ConfigError(f"cannot read {config_path}: {unreadable}") from unreadable
 
-    try:
-        parsed = json.loads(raw_text)
-    except json.JSONDecodeError as invalid:
-        raise ConfigError(f"{config_path} is not valid JSON: {invalid}") from invalid
-
-    if not isinstance(parsed, dict):
-        raise ConfigError(
-            f"{config_path} must contain a JSON object of config keys, got "
-            f"{type(parsed).__name__}"
-        )
-    return parsed
+    return parse_config_text(
+        raw_text, str(config_path), is_json=config_path.suffix == ".json"
+    )
