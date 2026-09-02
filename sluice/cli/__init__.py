@@ -80,6 +80,8 @@ from sluice.core.daemon import (
     DaemonHostError,
     assemble_registry,
     assert_daemon_host,
+    is_daemon_running,
+    read_last_look,
     run_forever,
 )
 from sluice.core.profile import REFERENCE_PROFILES
@@ -300,6 +302,24 @@ def _outcome_text(outcome) -> Text:
     return Text(label, style=_OUTCOME_STYLES.get(label, "cyan"))
 
 
+def _daemon_health(status) -> Text:
+    """One line answering "is it working?" — liveness first, then progress.
+
+    Two facts, because either alone misleads. The lock says whether a daemon
+    process exists; the heartbeat says when it last began a look. A live daemon
+    with an old heartbeat is inside a long gate, which is normal for NVD and
+    must not read as a fault. A dead daemon is the case that matters, and
+    nothing else in sluice would tell an operator about it — nothing supervises
+    it (errata E1), so after a reboot it simply is not there.
+    """
+    if not status.get("daemon_running"):
+        return Text("NOT RUNNING — start it: sluice daemon", style="bold red")
+    last_look = status.get("daemon_last_look")
+    if not last_look:
+        return Text("running (no look recorded yet)", style="green")
+    return Text(f"running, last look {last_look}", style="green")
+
+
 def _render_overview(status) -> None:
     """The fleet board: global flags, a table of runs, then what to do next."""
     paused = status.get("paused")
@@ -307,12 +327,9 @@ def _render_overview(status) -> None:
     header.add_column(style="dim")
     header.add_column()
     header.add_row("pipeline profile", str(status.get("pipeline_profile")))
-    header.add_row(
-        "daemon",
-        Text("PAUSED — no run will advance", style="bold red")
-        if paused
-        else Text("running", style="green"),
-    )
+    header.add_row("daemon", _daemon_health(status))
+    if paused:
+        header.add_row("", Text("PAUSED — no run will advance", style="bold red"))
     _out.print(header)
 
     runs = status.get("runs", [])
@@ -462,6 +479,13 @@ def status(
     settings = _settings(context)
     with _guard():
         payload = control.get_status(_state_file(settings), run, registry=_registry())
+        if not run:
+            # Liveness and progress are read here, not in `control`: `daemon`
+            # imports `control`, so control cannot import daemon back, and the
+            # CLI is already the composition root that sees both.
+            state_file = _state_file(settings)
+            payload["daemon_running"] = is_daemon_running(state_file)
+            payload["daemon_last_look"] = read_last_look(state_file)
     if settings.as_json:
         _emit_json(payload)
         return

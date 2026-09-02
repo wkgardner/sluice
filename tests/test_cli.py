@@ -324,8 +324,52 @@ def test_pause_and_resume_toggle_the_global_flag(deployment, capsys):
 
     assert main([*config, "resume"]) == 0
     main([*config, "status"])
-    paused_output = capsys.readouterr().out
-    assert "PAUSED" not in paused_output and "running" in paused_output
+    resumed_output = capsys.readouterr().out
+    assert "PAUSED" not in resumed_output
+
+
+def test_status_says_so_when_no_daemon_is_running(deployment, capsys):
+    """A dead daemon is reported as dead, and the fix is on the same line.
+
+    Nothing supervises the daemon (errata E1), so after a reboot it is simply
+    not there — and this line is the only place an operator would find that
+    out. It used to print "running" off the pause flag, which is a different
+    question entirely, and would have sent someone hunting anywhere except the
+    real cause.
+
+    No daemon runs during tests, so the honest answer here is NOT RUNNING.
+    """
+    main(["--config", str(deployment.config_path), "status"])
+
+    output = capsys.readouterr().out
+    assert "NOT RUNNING" in output
+    assert "sluice daemon" in output, "the report must say how to fix it"
+
+
+def test_status_reports_liveness_and_last_look_separately(deployment, capsys):
+    """A live daemon mid-gate must not read as a dead one.
+
+    Liveness comes from the lock, progress from the heartbeat. A gate can run
+    for hours with no time bound (⚑F), so an old heartbeat on a live daemon is
+    normal work — reporting that as a fault is the cry-wolf failure that trains
+    operators to ignore the line.
+    """
+    from sluice.core.daemon import DAEMON_LAST_LOOK_KEY, acquire_daemon_lock
+    from sluice.core.db import set_metadata, write_txn
+
+    with write_txn(deployment.state_file) as connection:
+        set_metadata(connection, DAEMON_LAST_LOOK_KEY, "2026-08-03T01:00:00+00:00")
+
+    # Hold the lock exactly as a running daemon would.
+    handle = acquire_daemon_lock(str(deployment.state_file) + ".lock")
+    try:
+        main(["--config", str(deployment.config_path), "status"])
+    finally:
+        handle.close()
+
+    output = capsys.readouterr().out
+    assert "NOT RUNNING" not in output
+    assert "running" in output and "2026-08-03T01:00:00+00:00" in output
 
 
 def test_help_explains_that_commands_are_state_only(capsys):
