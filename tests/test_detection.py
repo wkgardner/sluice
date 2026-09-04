@@ -113,6 +113,55 @@ def test_parse_survives_noise():
     assert result == [("RUN", pytest.approx((1000 + 2000) / 1024**4))]
 
 
+# A run folder carrying BOTH flat files and a delivery subdirectory — the
+# production Mizzou layout (e.g. SecureBio_02_SOL landing inside a run folder).
+# Decision 2026-09-04 (revised same day): the folder is ONE umbrella run —
+# deliveries roll up into the folder's single experiment, exactly as the
+# poller ingested them. The earlier per-delivery split is reverted.
+DELIVERY_FIXTURE = """\
+drwxr-xr-x          4,096 2026/08/30 21:30:12 .
+drwxr-xr-x             30 2026/08/30 21:30:12 RUN_A
+-rw-r--r--  1,000,000,000 2026/08/30 14:56:17 RUN_A/S1_L001_R1_001.fastq.gz
+-rw-r--r--          1,024 2026/08/30 16:41:41 RUN_A/md5s.txt
+drwxrwxr-x          4,096 2026/08/30 18:37:41 RUN_A/SecureBio_02_SOL
+-rw-r--r--  2,000,000,000 2026/08/30 14:56:17 RUN_A/SecureBio_02_SOL/S43_L001_R1_001.fastq.gz
+-rw-r--r--            512 2026/08/30 16:41:41 RUN_A/SecureBio_02_SOL/.verified-copy.sha256
+"""
+
+
+def test_parse_rolls_a_delivery_subdir_into_the_umbrella_run():
+    """A delivery subdirectory rolls up into the folder's single umbrella run.
+
+    One candidate, one accumulated size — flat files and subdirectory
+    deliveries together, exactly as the poller ingested production folders.
+    """
+    result = parse_rsync_listing(DELIVERY_FIXTURE)
+    assert result == [
+        (
+            "RUN_A",
+            pytest.approx((1_000_000_000 + 1_024 + 2_000_000_000 + 512) / 1024**4),
+        ),
+    ]
+
+
+def test_parse_a_nested_manifest_vouches_for_the_umbrella_run():
+    """A manifest anywhere inside the folder makes the umbrella a candidate.
+
+    Production deliveries carry their own manifests one level down
+    (``SecureBio_02_SOL_md5s.txt`` inside the subdir); the poller counted
+    those, and so must sluice.
+    """
+    listing = "\n".join(
+        [
+            "drwxr-xr-x 4096 d t RUN_A",
+            "-rw-r--r-- 1,000 d t RUN_A/DELIV/md5s.txt",
+            "-rw-r--r-- 2,000 d t RUN_A/DELIV/deeper/S1_L001_R1_001.fastq.gz",
+        ]
+    )
+    result = parse_rsync_listing(listing)
+    assert result == [("RUN_A", pytest.approx((1000 + 2000) / 1024**4))]
+
+
 # --------------------------------------------------------------------------
 # Unit 5 — build_listing_command (the exact argv + overlay).
 # --------------------------------------------------------------------------

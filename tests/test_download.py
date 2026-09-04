@@ -181,6 +181,96 @@ def test_listing_drops_directories_and_keeps_files(tmp_path):
     ]
 
 
+def test_listing_makes_exactly_one_attempt_even_for_dashed_names(tmp_path):
+    """An empty listing is final — no delivery-form fallback exists any more.
+
+    Decision 2026-09-04 (revised): folders are umbrella runs, so a run name is
+    always the literal remote directory. A second speculative connection
+    against a throttling sshd bought nothing but review findings 2/3/6.
+    """
+    empty_listing = "drwxr-xr-x          4,096 2026/07/30 09:12:01 .\n"
+    sources = []
+
+    def fake_runner(command, **kwargs):
+        sources.append(command[-1])
+        return types.SimpleNamespace(stdout=empty_listing, returncode=0)
+
+    client = RsyncTransferClient(
+        {"local_source_dir": str(tmp_path / "src")}, runner=fake_runner
+    )
+
+    assert client.list_run_files("RUN_A-DELIV") == []
+    assert len(sources) == 1
+
+
+def test_listing_prefers_the_literal_directory_when_it_has_files(tmp_path):
+    """A real directory whose name happens to contain a dash is never split."""
+    listing = (
+        "drwxr-xr-x          4,096 2026/07/30 09:12:01 .\n"
+        "-rw-r--r--          1,024 2026/07/30 09:12:01 lane_001.fastq.gz\n"
+    )
+    sources = []
+
+    def fake_runner(command, **kwargs):
+        sources.append(command[-1])
+        return types.SimpleNamespace(stdout=listing, returncode=0)
+
+    client = RsyncTransferClient(
+        {"local_source_dir": str(tmp_path / "src")}, runner=fake_runner
+    )
+
+    assert client.list_run_files("MY-RUN") == ["MY-RUN/lane_001.fastq.gz"]
+    assert len(sources) == 1
+
+
+def test_listing_empty_with_no_dash_makes_exactly_one_attempt(tmp_path):
+    """An undashed run name has no delivery form; empty means empty, one call."""
+    empty_listing = "drwxr-xr-x          4,096 2026/07/30 09:12:01 .\n"
+    sources = []
+
+    def fake_runner(command, **kwargs):
+        sources.append(command[-1])
+        return types.SimpleNamespace(stdout=empty_listing, returncode=0)
+
+    client = RsyncTransferClient(
+        {"local_source_dir": str(tmp_path / "src")}, runner=fake_runner
+    )
+
+    assert client.list_run_files("RUN_A") == []
+    assert len(sources) == 1
+
+
+def test_listing_is_recursive_so_nested_files_are_reachable(tmp_path):
+    """The listing carries ``-r``, and nested paths come back fetch-ready.
+
+    Detection certifies a candidate from files at ANY depth inside its delivery
+    (adversarial review finding 1): without ``-r`` the transfer lists only the
+    top level, downloads the manifest, and reports success having fetched none
+    of the data — the exact silent hole the fail-closed empty check cannot see.
+    """
+    listing = (
+        "drwxr-xr-x          4,096 2026/07/30 09:12:01 .\n"
+        "-rw-r--r--            256 2026/07/30 09:12:02 md5s.txt\n"
+        "drwxr-xr-x          4,096 2026/07/30 09:12:03 deeper\n"
+        "-rw-r--r--  1,234,567,890 2026/07/30 09:12:04 deeper/lane_001.fastq.gz\n"
+    )
+    captured = {}
+
+    def capturing_runner(command, **kwargs):
+        captured["command"] = command
+        return types.SimpleNamespace(stdout=listing, returncode=0)
+
+    client = RsyncTransferClient(
+        {"local_source_dir": str(tmp_path / "src")}, runner=capturing_runner
+    )
+
+    assert client.list_run_files("RUN_A") == [
+        "RUN_A/md5s.txt",
+        "RUN_A/deeper/lane_001.fastq.gz",
+    ]
+    assert "-r" in captured["command"]
+
+
 def test_connection_blocked_detection_distinguishes_throttling_from_failure():
     """Server-side connection rejection is recognised, a real error is not.
 
@@ -269,6 +359,75 @@ def test_all_files_transfer_and_land_flat_in_the_destination(tmp_path):
         f"run_A/lane{n}.fastq.gz" for n in range(5)
     }
     assert all(dest.parent.name == "raw_seqs" for _remote, dest in fetched)
+
+
+def test_listing_keeps_only_pipeline_inputs(tmp_path):
+    """Only raw ``*001.fastq.gz`` and checksum manifests are transfer candidates.
+
+    Production folders also carry ``*_trimmed.fastq.gz``, ``.stats.txt`` and
+    ``fastp.json`` files. The poller's include filters never downloaded those
+    (NVD does its own trimming) — terabytes of derivable data per run. sluice
+    matches that scope.
+    """
+    listing = (
+        "drwxr-xr-x          4,096 2026/07/30 09:12:01 .\n"
+        "-rw-r--r--  1,234,567,890 2026/07/30 09:12:01 lane1_001.fastq.gz\n"
+        "-rw-r--r--            256 2026/07/30 09:12:02 md5s.txt\n"
+        "-rw-r--r--            256 2026/07/30 09:12:02 SecureBio_02_SOL_md5s.txt\n"
+        "-rw-r--r--            256 2026/07/30 09:12:02 .verified-copy.sha256\n"
+        "-rw-r--r--  1,234,567,890 2026/07/30 09:12:03 lane1_001_trimmed.fastq.gz\n"
+        "-rw-r--r--         41,090 2026/07/30 09:12:04 lane1.stats.txt\n"
+        "-rw-r--r--        144,554 2026/07/30 09:12:05 lane1_fastp.json\n"
+    )
+
+    client = RsyncTransferClient(
+        {"local_source_dir": str(tmp_path / "src")},
+        runner=lambda command, **kwargs: types.SimpleNamespace(
+            stdout=listing, returncode=0
+        ),
+    )
+
+    assert client.list_run_files("run_A") == [
+        "run_A/lane1_001.fastq.gz",
+        "run_A/md5s.txt",
+        "run_A/SecureBio_02_SOL_md5s.txt",
+        "run_A/.verified-copy.sha256",
+    ]
+
+
+def test_shutdown_event_stops_submission_mid_download(tmp_path):
+    """Once the shutdown flag is set, no further files are submitted (Bug B, 3ac).
+
+    The runaway incident: ~40 SIGINTs each logged shutdown_requested while the
+    wave loop kept submitting for minutes — the flag was only checked between
+    runs, so the operator's real stop was ``kill -9``. The wave loop must honor
+    the cooperative flag: in-flight transfers drain, everything unsubmitted is
+    reported as a shutdown failure (fail-closed, the gate never claims success).
+    """
+    from sluice.core import stop
+
+    fetched = []
+
+    def fetch(remote_path, local_dest):
+        fetched.append(remote_path)
+        stop.SHUTDOWN.set()
+
+    try:
+        transferred, failures = download_run_files(
+            [f"run_A/lane{n}.fastq.gz" for n in range(40)],
+            tmp_path / "raw_seqs",
+            fetch,
+            max_workers=2,
+            wave_size=2,
+            ramp_delay_seconds=0,
+            sleep=lambda _seconds: None,
+        )
+    finally:
+        stop.SHUTDOWN.clear()
+
+    assert len(fetched) < 40, "submission must stop once the flag is set"
+    assert transferred < 40
+    assert any("shutdown" in str(failure) for failure in failures)
 
 
 def test_ramp_stops_widening_after_the_server_rejects_a_connection(tmp_path):

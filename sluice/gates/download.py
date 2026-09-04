@@ -33,6 +33,7 @@ from typing import Any
 import structlog
 
 from sluice.core.gate import Gate, GateOutcome, GateResult, no_op_invalidate
+from sluice.core.stop import SHUTDOWN
 from sluice.gates.transfer import (
     TransferError,
     is_connection_blocked_error,
@@ -199,6 +200,19 @@ def _download_one_pass(
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         in_flight: dict[Any, str] = {}
         while remaining or in_flight:
+            # Cooperative stop (Bug B, HANDOFF 3ac): once a signal sets the
+            # flag, submit nothing more — in-flight transfers drain, the rest
+            # are reported as failures so the gate can never claim success.
+            if remaining and SHUTDOWN.is_set():
+                log.warning(
+                    "download.shutdown_stop",
+                    **{"download.not_submitted": len(remaining)},
+                )
+                failures.extend(
+                    (path, "shutdown requested — file not submitted")
+                    for path in remaining
+                )
+                remaining = []
             # Submit the next wave only when the pool has room, so the delay is
             # a real ramp rather than a queue that drains instantly.
             if remaining and not ramp_paused and len(in_flight) < max_workers:
