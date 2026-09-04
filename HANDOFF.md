@@ -1,6 +1,6 @@
 # sluice — Handoff & Compaction Record
 
-**Updated:** 2026-07-29 (macOS session — control committed, 8 of 9 done; ADR-0005 recorded; build shifted to the lightweight mode, see §9a; next: daemon — see §10 item 3i)
+**Updated:** 2026-09-04 (CHTC session — FIRST CHTC INSTALL (3y), seed-and-skip backfill (3z), first daemon start + two findings (3aa), delivery-aware detection/download built TDD and adversarially reviewed, 761 green, uncommitted (3ab); runaway second start killed and fenced, two HIGH bugs queued (3ac); see §10 entries 3y–3ac)
 **Purpose:** The single file to read when resuming this project — across sessions, across the two
 environments, and across context compaction. If a summary ever replaces the live conversation, start
 here.
@@ -67,7 +67,7 @@ in before acting.
 | Environment | Path | Role |
 |---|---|---|
 | **macOS (osx-arm64)** | `/Users/willgardner/Bioinformatics/sluice` | ⭐ **Currently the most advanced copy.** Bootstrap executed; 12 agents, 2 guardrail hooks, subsystem map all present. |
-| **CHTC (linux-64)** | `/home/wkgardner/sluice` | Behind macOS as of 2026-07-20 (see §9). **Also hosts the live production `python-poller`** at `/home/wkgardner/python-poller`. |
+| **CHTC (linux-64)** | `/home/wkgardner/sluice` | Fresh clone of published `main` (PR #2 merged) as of 2026-09-04, configured for production — see §10 entry 3y. **Also hosts the live production `python-poller`** at `/home/wkgardner/python-poller`. |
 | **Production** | `/home/wkgardner/python-poller` (CHTC) | **LIVE. DO NOT DISTURB.** Last poll 2026-07-09; 69 runs; dirty working tree. sluice is additive; python-poller is never modified as part of this work. |
 
 **Sync direction has flipped.** The 2026-07-17 handoff had CHTC as the working session; as of
@@ -1414,6 +1414,249 @@ actually protected.
      schema and the code, **not verified against a real CHTC install**; it is untested until
      Will runs it.
    **Next: doctor increments B and C, unchanged.** Deploying CHTC first requires item 4 below.
+3y. ✅ **FIRST CHTC INSTALL — DEPLOYING-CHTC.md IS NOW REAL-WORLD TESTED THROUGH STEP 7**
+   2026-09-04 (CHTC session — the first since 07-17). The branch gap named in item 4 is CLOSED:
+   `config-toml-and-nvd-upload-targets` was published and merged as **PR #2** (`263897c`), and the
+   CHTC working copy is a current clone of `main`. Steps 1–5 of the guide (pixi, clone,
+   `install.sh`, `sluice setup`) were already done before this session; this session executed
+   steps 6 and 7. Nothing committed; `HANDOFF.md` edits await Will's consent.
+   - **Step 6 executed: `~/.sluice/config.toml` filled from production.** The values came from
+     THREE layers, and the guide only names the first: (1) PP `config.json` (the explicit
+     values); (2) PP **code defaults that were the de-facto production values** —
+     `labkey_server` / `labkey_experiments_project` (PP `labkey_client.py:117-118`) and
+     `labkey_schema` / `labkey_query` (PP `labkey_client.py:154-155`); (3) one value the poller
+     never set anywhere — `nvd_labkey_exp_id_guard_list`, whose production value is the NVD
+     repo's own default (PP `~/nvd/conf/labkey.config:17`). The NVD reference-data block came
+     from PP `nvd_helpers.py:87-92`. Real values live only in `~/.sluice/config.toml` and the
+     PP sources, never here.
+   - ⚠️ **The `labkey_schema` trap, worth keeping:** `sluice setup` pre-fills it `"lists"`, but
+     production uses the custom experiments schema (PP `labkey_client.py:154`). A
+     fill-only-the-empty-keys pass leaves it **silently wrong** — the prefilled defaults must be
+     checked against production too, not just the blanks.
+   - `remote_source_path` is `"."` — the poller listed the SSH user's home (`host:.`), and
+     `_lists_contents` (3x) normalises `"."` to the pinned `host:./` argv, so detection's remote
+     contract is byte-identical to production. `poll_interval_minutes` transferred at the
+     production 30, not the setup default 10 (Mizzou sshd connection sensitivity, D4 territory).
+   - **`slack_enabled` deliberately left `false`** with the channel id filled in: python-poller
+     still posts to the team channel, and two daemons double-posting is an outward-facing
+     failure. Flip it only when sluice takes over notifications.
+   - **Step 7 executed: `sluice doctor` — every config check ok** (profile `production-v3.1`
+     resolves; schema ladder at migration 11; `nvd_launch_base_is_local` green). The two
+     remaining FAILs are the **empty secret files**, and that is correct by design: the §9b
+     secrets hook blocks the agent from even naming the poller's secret files, so filling
+     `secrets/remote_password` and `secrets/labkey_api_key` is the operator's step, by hand.
+   - Guide friction for the next doc pass: step 6's key table omits `labkey_schema` (the
+     poisoned prefill above), and the guide nowhere says the poller's `config.get` defaults are
+     load-bearing production values that must be mined out of code.
+   **Next: Will fills the two secrets → doctor clean → step 8 (`screen` + `sluice daemon`),
+   observe-first, python-poller untouched (item 5). Doctor increments B and C still unchanged.**
+3z. ✅ **SEED-AND-SKIP BACKFILL — THE 79 HISTORICAL RUNS ARE IN SLUICE'S DB AND FENCED OFF**
+   2026-09-04 (same CHTC session as 3y). **Decision, user-approved: this refines, not violates,
+   the §5 "greenfield DB + drain (no state-migration code)" lock.** No pipeline state was
+   migrated — identity only (name, `experiment_id`, `size_tb`, `first_seen`) via sluice's own
+   `db.insert_run`, then `lifecycle='skipped'` via the audited `control.skip` (actor
+   `backfill`, one audit row per run, ids 1–79, each reason naming python-poller and its
+   `completed_at`). **Zero gate-satisfaction columns touched** — `skip` is "a disposition,
+   never a fabricated completion" (control §9), and stamping columns would have been a time
+   bomb: future gate migrations (globus, 012+) default to 0 and would reopen every "completed"
+   run. `skipped` is immune to schema growth.
+   - **Why seeding had to precede the first daemon start:** detection lists the remote source
+     and would insert every historical folder as a NEW active run, then drive it in the same
+     cycle (re-download TBs, re-run NVD). There is no detect-only mode — the loop-head pause
+     short-circuits detection too (§3.8). Pre-seeding makes detection a no-op for these names
+     (`insert_run` is ON CONFLICT DO NOTHING), and skip removes them from `ACTIVE_RUNS_WHERE`.
+   - **The drain is already complete.** The poller snapshot shows **79/79 runs fully completed
+     (all nine gate flags), zero errored, zero in-flight** — including one that completed the
+     same hour as the snapshot. 28 pre-SQLite rows carry NULL `experiment_id`; gate 0's
+     lookup-before-create re-derives it if any is ever unskipped.
+   - **Mechanism:** operator script `~/.sluice/seed_from_poller.py` (deliberately OUTSIDE the
+     repo so the no-migration-code lock keeps its teeth), dry-run by default, `--execute` to
+     write, safely re-runnable. It reads a **snapshot copy** of the poller DB (WAL-checkpointed,
+     no `-wal` sidecar at copy time), never the live file — a live sqlite open could drop
+     sidecar files into the production data dir. Seeded rows carry
+     `pipeline_version='production-v3.1'` so a later unskip resolves a real contract.
+   - **Takeover is `sluice unskip <run>`** — every production gate re-derives from the world
+     (resume-first, lookup-before-create, idempotent rsync, NVD resume). Note honestly: gates
+     RE-RUN what the world no longer evidences; unskipping a run whose staging/NVD outputs are
+     gone means real recompute.
+   - ⚠️ **Standing hazard until cutover: BOTH pollers are live.** Any brand-new remote folder
+     will be raced by python-poller and a running sluice daemon (same staging tree, duplicate
+     work). Before the first real `sluice daemon` start: re-snapshot, re-run the seeder
+     (picks up any newly-completed poller runs), and have a hold/skip ready for genuinely new
+     arrivals — or pick a quiet window. Cutover sequencing is undesigned; it is the next
+     planning item.
+   `sluice status` verified: 79 runs, all `skipped`, experiment ids rendered, daemon honestly
+   NOT RUNNING. **Next unchanged from 3y: secrets → doctor clean → first daemon start (the
+   unskip-one-run parity test is the natural first beta).**
+3aa. ⚠️ **FIRST DAEMON START — TWO ROOT-CAUSED FINDINGS, ONE FIXED, ONE NEEDS A DESIGN CALL**
+   2026-09-04 (same CHTC session). Will filled the secrets, unskipped the newest run
+   (`20260828…0213`, exp 32575), and ran `sluice daemon` live for the first time. What worked,
+   verbatim from the design: the `experiment` gate resumed in **0ms with zero LabKey calls**
+   (seeded id, resume-first); the disk preflight read real CephFS numbers (30.6 TiB free vs
+   6.23 required); the download gate **fail-closed refused** to "report a successful download
+   of nothing"; quarantine was stamped before the crash (persist-then-emit held — state stayed
+   correct even as the process died).
+   - **Finding 1 (seeder defect — FIXED, red-green verified).** The daemon crashed in the
+     quarantine emit path: `TypeError: can't subtract offset-naive and offset-aware datetimes`
+     (`events._milliseconds_between_iso_timestamps`). Root cause: 3z's seeder copied poller
+     `first_seen` verbatim as `detected_at` — offset-naive local Central — violating the
+     documented invariant at `db.now_iso` ("Every timestamp column is written with this",
+     aware UTC, lexical-ordering rationale). 45 rows repaired in place
+     (`~/.sluice/repair_seeded_timestamps.py`, America/Chicago → UTC, DST-correct, idempotent,
+     re-run proves 0 remaining); the seeder now normalizes at the boundary. Reproduced the
+     crash on the real row before the fix and proved `build_run_event` green after.
+     *Repo-side observation, flagged not fixed:* an emit-path exception AFTER the quarantine
+     commit kills the whole daemon — state honest, availability not. Whether `emit_run_event`
+     deserves a §3.5-style isolation catch is errata-class; decide deliberately, not in a
+     hotfix.
+   - **Finding 2 (production layout gap — OPEN, needs a design decision).** The download gate
+     listed **zero files** because the remote run folder holds no files — only a
+     **`SecureBio_02_SOL/` delivery SUBDIRECTORY** with the fastqs one level down (verified by
+     reproducing the gate's exact `rsync --list-only <root>/<run>/` against Mizzou).
+     `TransferClient.list_run_files` is deliberately non-recursive and drops directory
+     entries, so any nested-delivery run reads as empty and quarantines. The poller's answer
+     to this layout was **synthetic suffixed runs** (`<run>-SecureBio_02_SOL` — three sit in
+     the seeded history as their own rows with their own experiment ids); sluice has no model
+     for deliveries at all. **The sharper edge is detection, not download:** a second delivery
+     landing in an already-known folder name is invisible to sluice — `insert_run` no-ops on
+     the existing name and nothing ever notices the new data (the poller's in-flight exp
+     32588 appears to be exactly this: today's delivery into the `20260828…` folder). Decision
+     needed — is a delivery a new run (poller-style suffixed identity) or a re-detection of
+     the same run? Then the mechanical fix (recursive listing, or delivery-aware identity in
+     `parse_rsync_listing`) follows from the answer. This is D-class dropped production
+     knowledge surfacing exactly where the beta was meant to find it.
+   - The beta run was `clear_error`'d and re-`skip`ped (audited, actor `wkgardner`) — fenced
+     again until Finding 2 is resolved. `sluice status`: 79 skipped, daemon not running.
+   **Next: decide Finding 2's identity question, then fix the download gate (and likely
+   detection) through the normal plan/review path; re-run the unskip parity test after.**
+3ab. ✅ **DELIVERY-AWARE DETECTION + DOWNLOAD — 3aa FINDING 2 RESOLVED IN CODE** 2026-09-04
+   (same CHTC session). **User decision, stamped: each delivery subdirectory is its own run,
+   named `<folder>-<subdir>`** — poller parity with the manually-created suffixed runs.
+   Built TDD (every change red-green) with one adversarial review sweep per the lightweight
+   mode: **APPROVE-WITH-FIXES, both must-fixes applied and re-reviewed same session.**
+   `pixi run test` → **761 passed** (751 → 758 → 761), lint clean. **NOT committed.**
+   - `detection.parse_rsync_listing` now groups nested files into **delivery units**: depth-1
+     files belong to the folder; deeper files to `folder-subdir`. Candidacy
+     (manifest AND `*001.fastq.gz`) is judged per unit — a top-level manifest never vouches
+     for a subdirectory delivery.
+   - `transfer.list_run_files` is literal-first with a delivery-form fallback
+     (`name.replace("-", "/", 1)`), returns paths prefixed with the directory actually
+     listed (so `fetch` needed zero changes; `raw_seqs` still lands flat), and the listing
+     is now **recursive** (`-r`) — review finding 1: detection could certify a candidate
+     from a nested file the old non-recursive listing could never fetch, letting the gate
+     succeed having downloaded only the manifest. Closed with an argv+behavior pin test.
+   - Error propagation is honest (findings 4/5): a delivery-form failure after an EMPTY
+     literal success raises (a throttled connection must not read as "this run has no
+     files"), and a double failure names both attempted paths.
+   - **Documented limitations, decided acceptable** (findings 2/3, in the code docstring):
+     unit names are not injective against literal dash-named sibling folders (sizes can
+     double-count; a stale literal copy with files shadows the nested delivery), and the
+     inverse split is first-dash (a dash-carrying FOLDER inverts wrong). Both fail closed —
+     wrong-path listings quarantine, never fetch silent wrong data — and Illumina folder
+     naming is underscore-only. Revisit if a dash-named folder ever grows a delivery.
+   - For the record (findings 9/10, pre-existing): `TransferError.__cause__` chains retain
+     the full sshpass argv (a sink that formats exception chains would leak the password);
+     the compose/invert naming convention lives in detection and transfer by convention,
+     tests are the only drift guard.
+   - **Confirmed: the poller structurally cannot see second deliveries** (it groups by
+     top-level folder and the folder is already completed) — April's suffixed runs were
+     created manually, and the current delivery's experiment (32588, staging dir prepped
+     2026-09-03 by Will, yaml+samplesheet only, no data) is the same manual workflow
+     half-started. sluice is now the only automatic path for deliveries.
+   ⚠️ **Caution for the next daemon start: detection WILL surface the pending
+   `…-SecureBio_02_SOL` delivery as a NEW ACTIVE run and drive it.** Before starting,
+   either pre-seed it with Will's manually-created experiment id (insert_run with
+   `experiment_id`, lifecycle active → gate 0 resumes, zero LabKey calls, no duplicate) or
+   skip it if it should stay manual. Note Will has pointed the NVD upload lists at TEST
+   lists in `~/.sluice/config.toml`, so an end-to-end beta run uploads nowhere production.
+3ac. ⛔ **RUNAWAY SECOND DAEMON START — KILLED, FENCED, TWO NEW MUST-FIX BUGS** 2026-09-04
+   (same CHTC session, ~13:54–13:56). Will unskipped the base `20260828…0213` run and started
+   the daemon with the 3ab code in place. Detection worked as designed and surfaced **27
+   delivery runs** (GR0032 / GR0079 / SecureBio_02_SOL subdirs exist across the whole remote
+   backlog — deliveries are the NORM, not the exception). The daemon then drove the base run
+   and its download submitted 2,259 files. Killed with `kill -9` + targeted `pkill` of the
+   rsync tree after Ctrl-C proved useless; state fenced afterwards: **all 107 runs skipped,
+   `paused=1`.** Damage: **32 files / 40 GB** of delivery data downloaded into
+   `…/32575/raw_seqs/` — all identifiable (`find … -newermt "2026-09-04 13:54"`), operator
+   owns deletion per ADR-0005; nothing else ran, no LabKey writes (the 27 delivery rows all
+   have `experiment_id=None` — gate 0 never reached them).
+   - **BUG A (HIGH): transfer ignores detection's unit boundary for BASE runs.** The 3ab
+     review fix made `_list_directory` recursive (`-r`, closing finding 1), but an undashed
+     run's literal listing now absorbs every delivery subdirectory beneath it — the mirror
+     image of the hole it closed, and review finding 6 said this out loud ("literal always
+     wins only holds when…"). The 2,259-file download WAS the delivery, fetched under the
+     base run's identity into the base experiment's staging. Fix: apply detection's unit
+     rule in `list_run_files` — an undashed run keeps only depth-1 files from its recursive
+     listing; a delivery run keeps everything under its subdir. The 3ab test
+     `test_listing_is_recursive_so_nested_files_are_reachable` encodes the WRONG expectation
+     (nested files returned for an undashed run) and must be rewritten against the delivery
+     branch.
+   - **BUG B (HIGH): SIGINT/SIGTERM cannot stop an in-flight download.** ~40 Ctrl-C presses
+     over two minutes each logged `daemon.shutdown_requested` while the wave loop kept
+     submitting (`should_stop` is checked between runs/cycles but never inside the download
+     wave loop). An operator's only real stop is `kill -9`, which orphans live rsyncs.
+     `pause` correctly cannot help (state-only, next-cycle). Fix: thread `should_stop` into
+     the wave-submission loop.
+   - Also observed: sluice fetches `*_trimmed*` and stats files the poller's md5-filtered
+     download never took — a deliberate-or-not scope difference worth a decision;
+     and the delivery backlog means the seed-and-skip fence must cover DELIVERY units too
+     (the 27 are now hand-fenced with audited skips; a re-run of the seeder covers only
+     poller-known names).
+   - **CORRECTED BY WILL (same day): the 27 delivery runs are mostly NOT an unanalyzed
+     backlog.** The poller processed each folder as an UMBRELLA — its recursive listing
+     folded every delivery subdir present at processing time into the one base run
+     (verified: `…/32351/raw_seqs/` still holds `SecureBio_02_SOL_md5s.txt`, the delivery's
+     manifest inside the umbrella experiment; raw data itself is cleaned post-backup, so
+     staging cannot generally answer "was it analyzed"). The manual suffixed runs (April
+     trio + 32588 prep) are all `-SecureBio_02_SOL` — separate re-analysis of that org's
+     deliveries by policy, not late-arrival rescue. **Triage rule for the 27 fenced
+     delivery runs: they ride their umbrella experiments unless Will wants a separate
+     analysis (his SecureBio practice) — his call per delivery.** Forward-looking fork to
+     confirm: sluice's per-delivery model deliberately DIVERGES from the poller's umbrella
+     ingestion for future folders — each future delivery gets its own experiment and
+     analysis. Decided 2026-09-04; reconfirm knowing the umbrella history.
+   **Next session, in order: TDD Bug A + Bug B, re-review, then the 32588 pre-seed plan
+   (3ab caution) for the SecureBio_02_SOL delivery beta. Working tree still uncommitted:
+   3ab code + all ledger entries.**
+3ad. ✅ **IDENTITY DECISION REVERSED: UMBRELLA RUNS — 3ab's per-delivery split REVERTED**
+   2026-09-04 (same session). **User decision, final: one folder = one run = one
+   experiment; deliveries roll up, matching the poller's actual ingestion** (3ac's
+   correction). Implemented test-first: detection groups all nested files (any depth) into
+   the top-level folder, a nested manifest vouches for the umbrella; transfer is ONE
+   recursive listing of the literal name — the delivery-form fallback and its
+   name↔path inverse mapping are DELETED, which **closes review findings 2/3/6 and
+   Bug A structurally** (recursive absorb is now the intended behavior, and the reviewer's
+   ``-r`` fix (finding 1) is kept). Suite **757 passed**, lint clean, uncommitted.
+   - Consequences: the 27 runaway suffixed delivery rows were dead identities — never
+     re-detectable — and were **DELETED by Will's decision later this session** (one txn,
+     audited as `delete_runs` with all names; DB back to the 79 seeded runs, the three
+     legitimate April `-SecureBio_02_SOL` re-analyses retained). The 40 GB in `…/32575/raw_seqs/`
+     is now arguably the base run's own data (umbrella), though tail files may be
+     partial — rsync ``-avP`` re-verifies on any future re-entry. Separate SecureBio-style
+     re-analyses (April trio, 32588) stay a manual workflow outside sluice.
+   - **Bug B (SIGINT ignored by the download wave loop) is now THE remaining gate before
+     any daemon restart.** Everything stays skipped + paused until it lands.
+3ae. ✅ **BUG B FIXED + DOWNLOAD SCOPE MATCHED TO THE POLLER** 2026-09-04 (same session,
+   after a second runaway kill — the umbrella re-download was fetching `*_trimmed*`/stats
+   files and Ctrl-C again could not stop it). Both TDD red-green; suite **759 passed**,
+   lint clean, uncommitted.
+   - **Bug B:** new core module `sluice/core/stop.py` — ONE module-level cooperative
+     `threading.Event`. The daemon's signal handlers set it (run_forever now uses and
+     CLEARS it at startup); the download wave loop checks it before every submission:
+     in-flight transfers drain, everything unsubmitted becomes a "shutdown requested"
+     failure — fail-closed, the gate can never claim success on an interrupted download.
+     Placed in core because gates cannot import `core.daemon` back (registry cycle).
+     Daemon import-surface pin updated (`sluice.core.stop` allowed, commented).
+   - **Scope:** `_parse_listing_filenames` now keeps only `*001.fastq.gz` + `*md5s.txt`
+     + `*.sha256` — the poller's include-filter scope; trimmed/stats/fastp files are
+     derivable by NVD and were never production inputs. "Listed zero files" now honestly
+     means "zero pipeline inputs".
+   - Operational note: `poll_interval_minutes` dropped 30 → 1 by Will (the 30 was a
+     poller-ism; sluice's look is one cheap listing connection and the interval is the
+     operator-command latency).
+   **The daemon is now safe to restart: Ctrl-C works mid-download, and the umbrella
+   re-download of `20260828…` will skip everything already present and fetch only raw
+   fastqs + manifests.**
 4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
    is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
    remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`
