@@ -73,15 +73,24 @@ def is_connection_blocked_error(error_message: str) -> bool:
     return any(marker in lowered for marker in _CONNECTION_BLOCKED_MARKERS)
 
 
+# The transfer scope, matching the poller's rsync include filters: raw lane
+# fastqs and checksum manifests ONLY. Production folders also carry
+# ``*_trimmed.fastq.gz`` / ``*.stats.txt`` / ``*fastp.json``; NVD does its own
+# trimming, so fetching those is terabytes of derivable data per run.
+_PIPELINE_INPUT_SUFFIXES = ("001.fastq.gz", "md5s.txt", ".sha256")
+
+
 def _parse_listing_filenames(listing_output: str, run_name: str) -> list[str]:
-    """Extract file paths from ``rsync --list-only`` output, dropping directories.
+    """Extract pipeline-input file paths from ``rsync --list-only`` output.
 
     rsync lines look like ``-rw-r--r--  1,234,567 2026/07/30 09:12:01 file.fastq.gz``:
     permissions, size, date, time, then the name — so the name is everything after
     the fourth whitespace-split field, and a leading ``d`` marks a directory. The
     name is split off with ``maxsplit=4`` rather than ``[-1]`` because filenames can
     contain spaces, and ``.``/``..`` self-entries are dropped the same way any other
-    non-file is.
+    non-file is. Files outside ``_PIPELINE_INPUT_SUFFIXES`` are dropped — the
+    same scope the poller's ``--include`` filters enforced, so "listed zero
+    files" means "zero pipeline inputs".
     """
     filenames = []
     for line in listing_output.splitlines():
@@ -90,6 +99,8 @@ def _parse_listing_filenames(listing_output: str, run_name: str) -> list[str]:
             continue
         permissions, name = fields[0], fields[4].strip()
         if permissions.startswith("d") or name in ("", ".", ".."):
+            continue
+        if not name.lower().endswith(_PIPELINE_INPUT_SUFFIXES):
             continue
         filenames.append(f"{run_name}/{name}")
     return filenames
@@ -177,43 +188,69 @@ class RsyncTransferClient:
         ]
 
     def list_run_files(self, run_name: str) -> list[str]:
-        """Return the run directory's file paths, relative to the transfer root.
+        """Return the run's file paths, relative to the transfer root.
 
-        One ``rsync --list-only`` against ``<root>/<run_name>/``. Directory entries
-        are dropped (leading ``d`` in rsync's permission column) so only real files
-        reach the transfer loop, and each surviving name is returned prefixed with
-        the run directory so it can be handed straight back to ``fetch``.
+        Lists ``<root>/<run_name>/`` first. If that yields no files and the name
+        contains files at any depth, they are all returned: **the folder is one
+        umbrella run** (decision 2026-09-04, revised same day — deliveries roll
+        up into the folder's single experiment, mirroring detection; the brief
+        per-delivery split and its name-to-path fallback are reverted).
+        Directory entries are dropped (leading ``d`` in rsync's permission
+        column) so only real files reach the transfer loop, and each surviving
+        name is returned prefixed with the run directory so it can be handed
+        straight back to ``fetch``.
 
         Raises:
-            TransferError: the listing command failed. Fail-closed on purpose — an
-                empty list would otherwise read as "this run has no files" and let
-                the gate report a successful download of nothing.
+            TransferError: the listing command failed. Fail-closed on purpose —
+                an empty list would otherwise read as "this run has no files"
+                and let the gate report a successful download of nothing.
+        """
+        return self._list_directory(run_name)
+
+    def _list_directory(self, remote_directory: str) -> list[str]:
+        """One recursive ``rsync --list-only -r`` of ``remote_directory``'s contents.
+
+        Recursive on purpose (review finding 1): detection certifies a
+        candidate from files at any depth inside its delivery unit, so a
+        non-recursive listing here would fetch the manifest, miss the nested
+        data, and let the gate report success having downloaded nothing real.
+
+        Raises:
+            TransferError: the listing command failed or a binary is absent.
         """
         # The trailing slash is LOAD-BEARING: `rsync --list-only <dir>` lists the
         # directory ENTRY (one line), while `<dir>/` lists its CONTENTS. It has to
         # be appended AFTER path construction, because pathlib strips it —
         # Path("/a/b") / "run/" is "/a/b/run". Losing it makes every run look
         # empty, which the gate then correctly refuses as "listed zero files".
-        source = self._remote_source(run_name) + "/"
+        source = self._remote_source(remote_directory) + "/"
         if self.is_local_mode:
-            command = ["rsync", "--list-only", source]
+            command = ["rsync", "--list-only", "-r", source]
         else:
             password = _load_password(self._config["password_file"])
-            command = ["sshpass", "-p", password, "rsync", "--list-only", source]
+            command = [
+                "sshpass",
+                "-p",
+                password,
+                "rsync",
+                "--list-only",
+                "-r",
+                source,
+            ]
         try:
             completed = self._runner(
                 command, capture_output=True, text=True, check=True
             )
         except FileNotFoundError as missing_binary:
             raise TransferError(
-                f"listing run {run_name!r} failed: required binary not found "
+                f"listing {remote_directory!r} failed: required binary not found "
                 f"({missing_binary})"
             ) from missing_binary
         except subprocess.CalledProcessError as failed:
             raise TransferError(
-                f"listing run {run_name!r} failed: {failed.stderr}"
+                f"listing {remote_directory!r} failed: {failed.stderr}"
             ) from failed
-        return _parse_listing_filenames(completed.stdout or "", run_name)
+        return _parse_listing_filenames(completed.stdout or "", remote_directory)
 
     def fetch(self, remote_path: str, local_dest) -> str:
         """Transfer one file, creating its parent directory. Returns rsync's stdout.

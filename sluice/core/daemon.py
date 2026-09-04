@@ -28,7 +28,7 @@ from collections.abc import Callable, Mapping
 
 import structlog
 
-from sluice.core import control
+from sluice.core import control, stop
 from sluice.core.context import is_safe_path_component, resolve_context
 from sluice.core.db import (
     get_connection,
@@ -956,7 +956,13 @@ def run_forever(
             registry=registry,
             default_pipeline_version=default_pipeline_version,
         )
-        shutdown_event = threading.Event()
+        # The module-level cooperative flag (core.stop), not a local Event:
+        # long-running gate internals poll the same flag at their submission
+        # boundaries, so one signal stops both the cycle loop AND an in-flight
+        # download's wave submission (Bug B, HANDOFF 3ac). Cleared at startup
+        # so a previous shutdown can never make a fresh daemon refuse work.
+        shutdown_event = stop.SHUTDOWN
+        shutdown_event.clear()
         install_signal_handlers(shutdown_event)
         log.info(
             "daemon.started", **{"daemon.poll_interval_minutes": poll_interval_minutes}

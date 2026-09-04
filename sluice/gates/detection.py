@@ -52,12 +52,17 @@ def parse_rsync_listing(output: str) -> list[tuple[str, float]]:
     line splits into ``perms size date time path``; blank/short lines and the
     ``.`` marker are skipped. A top-level ``d``-entry registers a folder; a
     top-level plain file is ignored (a loose fastq at the root is not a run); a
-    nested ``d``-entry is skipped (duplicate-download guard); a nested file joins
-    its top-level folder with its comma-stripped size accumulated (an unparsable
-    size skips that row only). A folder is a **candidate** iff it carries a
-    checksum manifest (a path lowercased ending ``md5s.txt`` or ``.sha256``)
-    **and** at least one file whose final path component ends ``001.fastq.gz``
-    (production's own ``--include`` filter — stricter than "any file").
+    nested ``d``-entry is skipped (folders are derived from files, not dir
+    entries). A nested file at ANY depth joins its **top-level folder** with
+    its comma-stripped size accumulated (an unparsable size skips that row
+    only) — **the folder is one umbrella run**: delivery subdirectories
+    (GR0032, SecureBio_02_SOL, …) roll up into the folder's single experiment,
+    exactly as the poller ingested them (decision 2026-09-04, revised same
+    day; the brief per-delivery split is reverted). A folder is a
+    **candidate** iff it carries a checksum manifest anywhere inside (a path
+    lowercased ending ``md5s.txt`` or ``.sha256``) **and** at least one file
+    whose final path component ends ``001.fastq.gz`` (production's own
+    ``--include`` filter — stricter than "any file").
 
     Args:
         output: the raw stdout of ``rsync --list-only -r``.
@@ -88,11 +93,12 @@ def parse_rsync_listing(output: str) -> list[tuple[str, float]]:
                 _folder(path)
             continue
         if is_directory:
-            # A nested directory (a run's subdir) is skipped, not descended.
+            # A nested directory entry registers nothing — folders are derived
+            # from the files inside them.
             continue
-        # Nested file — attribute it to its top-level folder.
-        top_level = path.split("/", 1)[0]
-        folder = _folder(top_level)
+        # Nested file at any depth — attribute it to its top-level umbrella
+        # folder (deliveries roll up; one folder = one run = one experiment).
+        folder = _folder(path.split("/", 1)[0])
         lowered_path = path.lower()
         if lowered_path.endswith("md5s.txt") or lowered_path.endswith(".sha256"):
             folder["manifest"] = True

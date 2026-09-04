@@ -228,6 +228,9 @@ ALLOWED_DAEMON_IMPORTS = {
     "sluice.core.profile",
     "sluice.core.reconcile",
     "sluice.core.control",
+    # The cooperative shutdown flag (Bug B, HANDOFF 3ac): signal handlers set
+    # it, long-running gate internals poll it at submission boundaries.
+    "sluice.core.stop",
 }
 
 FORBIDDEN_ATTRIBUTE_NAMES = {"invalidate", "unlink", "rmtree", "remove"}
