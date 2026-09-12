@@ -1747,6 +1747,28 @@ actually protected.
    listing/transfer path (already proven live this week against Mizzou). The 3af-3ai
    fixes are committed (`3c11368`..`7d30066`); the 3ai stop-equals-quarantine decision
    is stamped DECIDED (keep as-is).
+3ak. ✅ **NVD v3.4.1 PARAMS DESYNC FOUND BY DRY-RUN AND FIXED** 2026-09-12. Will asked to
+   verify `~/nvd` is on v3.4.1 (it is: clean tag, matches origin) and that the generated
+   params yaml still works. It did NOT: NVD v3.4.0 **removed the exp-id guard list
+   concept entirely** (zero references left in the repo) and `NvdParams` is pydantic
+   `extra="forbid"` — proven by pushing sluice's real generated yaml through NVD's own
+   `NvdParams.merge`, which REJECTED it ("Extra inputs are not permitted:
+   labkey_exp_id_guard_list"). The first real `nvd run` sluice ever launched would have
+   quarantined at param validation. Fixed TDD: the param and its config field are gone
+   from the builder, schema, example, and live config (doctor follows the schema).
+   - **Behavior drift closed the same session (user-decided: both ON):** production
+     always ran `experimental: true` (poller config) and `filter_low_complexity_reads:
+     true` (poller-hardcoded), but NVD v3.4.1 defaults both FALSE — so sluice's
+     omission would have silently changed the analysis. Now emitted explicitly from two
+     new schema-backed config keys (`nvd_experimental`,
+     `nvd_filter_low_complexity_reads`, default true, "nvd analysis" group).
+   - Final ground truth: the regenerated yaml is **VALID against v3.4.1 with both flags
+     True** and uploads pointed at the test lists. Suite **766 passed**, lint clean.
+   - Method note for the ledger: the schema-diff + NvdParams.merge check lives in the
+     session scratchpad only; the durable lesson is that `nvd_repo_dir`'s ref is a
+     DEPLOYMENT INPUT — any NVD upgrade needs this params re-validation before the next
+     daemon start. Candidate for doctor increment B (probe: merge the generated yaml
+     through py_nvd, exactly as done here).
 4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
    is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
    remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`
