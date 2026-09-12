@@ -1913,3 +1913,28 @@ def test_a_second_daemon_on_another_host_is_refused(config):
             max_cycles=1,
             hostname="submit2",
         )
+
+
+def test_a_cycle_with_nothing_to_do_still_logs_a_summary(prepared):
+    """An idle cycle emits one ``daemon.cycle`` line — silence never means idle.
+
+    The operator question this exists to answer (3ah): "is there nothing to
+    poll, or is something broken and just not logging?" A healthy-but-idle
+    daemon used to emit nothing per cycle, indistinguishable on stdout from a
+    wedged one. Now every cycle says what it saw and why nothing moved.
+    """
+    with structlog.testing.capture_logs() as captured:
+        result = run_cycle(
+            prepared, registry=REFERENCE_PROFILES, lister=_fixed_lister([])
+        )
+
+    assert result["status"] == "ok"
+    summaries = _events_named(captured, "daemon.cycle")
+    assert len(summaries) == 1
+    line = summaries[0]
+    assert line["cycle.status"] == "ok"
+    assert line["cycle.detected"] == 0
+    assert line["cycle.eligible"] == 0
+    assert line["cycle.skipped"] == 0
+    assert line["cycle.held"] == 0
+    assert line["cycle.quarantined"] == 0

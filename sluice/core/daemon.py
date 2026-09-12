@@ -778,6 +778,7 @@ def run_cycle(
     finally:
         pause_connection.close()
     if currently_paused:
+        log.info("daemon.cycle", **{"cycle.status": "paused"})
         return {"status": "paused", "detected": [], "runs": {}}
 
     if disk_floor_check is not None:
@@ -795,6 +796,7 @@ def run_cycle(
             # "daemon", target_run NULL.
             control.pause(db_path, "daemon", reason=reason)
             log.error("daemon.paused", **{"daemon.reason": reason})
+            log.info("daemon.cycle", **{"cycle.status": "disk-paused"})
             return {"status": "disk-paused", "detected": [], "runs": {}}
 
     detected = detect_new_runs(config, lister=lister, notifier=notifier)
@@ -802,6 +804,15 @@ def run_cycle(
     selection_connection = get_connection(db_path)
     try:
         active_rows = select_active_runs(selection_connection)
+        # Fence counts for the cycle summary: how many runs exist but are
+        # deliberately out of the daemon's reach. This is what lets an operator
+        # tell "healthy but nothing eligible" from "broken and silent" (3ah).
+        skipped_count, held_count, quarantined_count = selection_connection.execute(
+            "SELECT COALESCE(SUM(lifecycle = 'skipped'), 0),"
+            "       COALESCE(SUM(lifecycle = 'held'), 0),"
+            "       COALESCE(SUM(errored_at IS NOT NULL), 0)"
+            " FROM runs"
+        ).fetchone()
     finally:
         selection_connection.close()
 
@@ -823,8 +834,23 @@ def run_cycle(
             stopped = True
             break
 
+    cycle_status = "stopped" if stopped else "ok"
+    # One summary line per look, always — the canonical answer to "what did
+    # the daemon just do, and if nothing, why not" (3ah).
+    log.info(
+        "daemon.cycle",
+        **{
+            "cycle.status": cycle_status,
+            "cycle.detected": len(detected),
+            "cycle.eligible": len(active_rows),
+            "cycle.runs": run_tokens,
+            "cycle.skipped": skipped_count,
+            "cycle.held": held_count,
+            "cycle.quarantined": quarantined_count,
+        },
+    )
     return {
-        "status": "stopped" if stopped else "ok",
+        "status": cycle_status,
         "detected": detected,
         "runs": run_tokens,
     }
