@@ -161,14 +161,14 @@ def build_params_yaml(config, experiment_id, samplesheet_path) -> str:
         "taxonomy_dir": config["nvd_taxonomy_dir"],
         "virus_index": config["nvd_virus_index"],
         "virus_index_version": config["nvd_virus_index_version"],
-        # Where NVD puts its own results. The guard list is how NVD makes its
-        # upload idempotent, so it is as load-bearing as the two hit lists.
+        # Where NVD puts its own results. (The exp-id guard list is gone:
+        # NVD v3.4.0 removed the concept, and NvdParams is extra="forbid",
+        # so emitting it fails every run at param validation.)
         "labkey_server": config["nvd_labkey_server"],
         "labkey_project_name": config["nvd_labkey_project_name"],
         "labkey_schema": config["nvd_labkey_schema"],
         "labkey_blast_fasta_list": config["nvd_labkey_blast_fasta_list"],
         "labkey_blast_meta_hits_list": config["nvd_labkey_blast_meta_hits_list"],
-        "labkey_exp_id_guard_list": config["nvd_labkey_exp_id_guard_list"],
     }
     bare = {
         "cutoff_percent": config["nvd_cutoff_percent"],
@@ -177,6 +177,13 @@ def build_params_yaml(config, experiment_id, samplesheet_path) -> str:
         "max_blast_targets": config["nvd_max_blast_targets"],
         "dedup": str(config["nvd_dedup"]).lower(),
         "trim_adapters": str(config["nvd_trim_adapters"]).lower(),
+        # Both default FALSE in NVD v3.4.1 but production always ran them
+        # true (decided 2026-09-12) — omission would silently change the
+        # analysis, the exact failure this builder's docstring warns about.
+        "experimental": str(config["nvd_experimental"]).lower(),
+        "filter_low_complexity_reads": str(
+            config["nvd_filter_low_complexity_reads"]
+        ).lower(),
         "labkey": str(config["nvd_labkey"]).lower(),
         # Unquoted to match production's line exactly (PP ``nvd_helpers.py:117``).
         "labkey_webdav": build_webdav_url(config, experiment_id),

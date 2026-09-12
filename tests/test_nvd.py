@@ -35,6 +35,8 @@ NVD_PARAMS = {
     "nvd_max_blast_targets": 100,
     "nvd_dedup": True,
     "nvd_trim_adapters": True,
+    "nvd_experimental": True,
+    "nvd_filter_low_complexity_reads": True,
     # LabKey upload targets — where NVD puts its own results.
     "nvd_labkey": True,
     "nvd_labkey_server": "labkey.example.org",
@@ -42,7 +44,6 @@ NVD_PARAMS = {
     "nvd_labkey_schema": "lists",
     "nvd_labkey_blast_fasta_list": "example_fasta_list",
     "nvd_labkey_blast_meta_hits_list": "example_meta_list",
-    "nvd_labkey_exp_id_guard_list": "example_guard_list",
     # The WebDAV destination is derived from these two, not configured directly.
     "labkey_server": "labkey.example.org",
     "labkey_experiments_project": "/proj/experiments",
@@ -189,8 +190,14 @@ def test_params_yaml_carries_the_labkey_upload_targets():
     assert 'labkey_schema: "lists"' in rendered
     assert 'labkey_blast_fasta_list: "example_fasta_list"' in rendered
     assert 'labkey_blast_meta_hits_list: "example_meta_list"' in rendered
-    assert 'labkey_exp_id_guard_list: "example_guard_list"' in rendered
+    # Removed in NVD v3.4.0 (the concept is gone from the tool); NvdParams is
+    # extra="forbid", so emitting it makes every `nvd run` fail at validation.
+    assert "labkey_exp_id_guard_list" not in rendered
     assert "trim_adapters: true" in rendered
+    # Production parity, decided 2026-09-12: the poller ran both true; NVD
+    # v3.4.1 defaults both false, so omission would silently change analysis.
+    assert "experimental: true" in rendered
+    assert "filter_low_complexity_reads: true" in rendered
 
 
 def test_the_webdav_destination_is_derived_from_the_experiments_container():
