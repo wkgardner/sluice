@@ -805,3 +805,31 @@ def test_an_unclaimed_database_is_usable_from_anywhere(deployment, capsys, monke
     monkeypatch.setattr(socket, "gethostname", lambda: "whatever")
 
     assert main(["--config", str(deployment.config_path), "status"]) == 0
+
+
+def test_daemon_configures_file_logging_before_looping(
+    deployment, tmp_path, monkeypatch
+):
+    """``sluice daemon`` must wire the file sinks before the loop starts.
+
+    ``configure_logging`` was built, tested, and exported — and called by
+    nobody, so every daemon so far logged to console only and a 4-hour
+    checksum ran with zero visible progress. The behavioral pin: after the
+    daemon command runs, the rotating events file and per-run directory exist.
+    """
+    events_file = tmp_path / "logs" / "events.jsonl"
+    run_events_dir = tmp_path / "logs" / "runs"
+    config_path = _write_config(
+        tmp_path / "logging_config.toml",
+        state_file=str(deployment.state_file),
+        local_staging_dir=str(tmp_path / "staging"),
+        events_file=str(events_file),
+        run_events_dir=str(run_events_dir),
+        events_max_mb=1,
+        events_backup_count=1,
+    )
+    monkeypatch.setattr("sluice.cli.run_forever", lambda *args, **kwargs: None)
+
+    assert main(["--config", str(config_path), "daemon", "--once"]) == 0
+    assert events_file.exists(), "the rotating events sink was never created"
+    assert run_events_dir.is_dir()
