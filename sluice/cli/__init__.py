@@ -80,6 +80,7 @@ from sluice.core.daemon import (
     DaemonHostError,
     assemble_registry,
     assert_daemon_host,
+    configure_logging,
     is_daemon_running,
     read_last_look,
     run_forever,
@@ -707,6 +708,11 @@ def daemon(
     settings = _settings(context)
     with _guard():
         config = load_config(settings.config)
+        # Wire the file sinks BEFORE any work: the rotating events.jsonl and
+        # the per-run logs are the only record of what happened once the
+        # console scrolls away (3af — this call existed for six weeks with no
+        # caller, and a 4-hour checksum ran invisibly because of it).
+        configure_logging(config)
         registry = _registry()
         notifier = make_notifier(config)
         _out.print(
