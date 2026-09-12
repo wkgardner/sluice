@@ -23,6 +23,7 @@ otherwise MD5 (PP ``_checksum_algorithm``, ``poller.py:710``). A wrong guess fai
 loudly rather than passing silently.
 """
 
+import concurrent.futures
 import hashlib
 import os
 import pathlib
@@ -31,6 +32,7 @@ from typing import Any
 import structlog
 
 from sluice.core.gate import Gate, GateOutcome, GateResult, no_op_invalidate
+from sluice.core.stop import SHUTDOWN
 from sluice.gates.download import RAW_SEQS_DIRNAME
 
 __all__ = [
@@ -140,26 +142,119 @@ def _algorithm_for(expected_digest: str) -> str:
     return "sha256" if len(expected_digest.strip()) == 64 else "md5"
 
 
-def verify_directory(directory, expected: dict[str, str]) -> list[str]:
-    """Verify each expected file in ``directory``. Returns human-readable problems.
+def _verify_one_file(directory, filename: str, expected_digest: str) -> str | None:
+    """Hash one manifest entry; return its problem string, or None when intact.
 
-    A file named in the manifest but absent from disk is a problem, as is one whose
-    digest disagrees. An empty return means every expected file is present and
-    intact.
+    A pure worker in the poller's ``verify_single_file`` shape: designed to run
+    inside the thread pool, it only computes and returns — it NEVER logs (the
+    D6 rule: the wide-event context does not propagate into pool workers, so
+    all logging happens on the main thread as results arrive).
+    """
+    candidate = directory / filename
+    if not candidate.is_file():
+        return f"{filename}: named in the manifest but not on disk"
+    actual_digest = compute_digest(candidate, _algorithm_for(expected_digest))
+    if actual_digest.lower() != expected_digest.strip().lower():
+        return (
+            f"{filename}: digest mismatch "
+            f"(expected {expected_digest.strip().lower()}, got {actual_digest})"
+        )
+    return None
+
+
+def verify_directory(
+    directory,
+    expected: dict[str, str],
+    run_name: str | None = None,
+    max_workers: int = 4,
+) -> list[str]:
+    """Verify each expected file in ``directory`` in parallel. Returns problems.
+
+    A file named in the manifest but absent from disk is a problem, as is one
+    whose digest disagrees. An empty return means every expected file is
+    present and intact. Problems are ordered by filename, never by thread
+    completion order, so output is deterministic.
+
+    The poller's ``verify_checksums`` shape (PP ``poller.py:786``): hashing a
+    full run is hours of I/O when sequential, so files are hashed on a
+    ``ThreadPoolExecutor`` — concurrent reads overlap CephFS latency and
+    ``hashlib`` releases the GIL on large buffers. Production sizes the pool
+    from ``parallel_downloads``, exactly as the poller did.
+
+    Two liveness affordances (the 4-hour-invisible-checksum lesson, 3af):
+    a ``checksum.progress`` event as every file completes, and the cooperative
+    ``core.stop`` flag checked at submission and between completions — on
+    shutdown, in-flight hashes drain, unstarted ones are cancelled, and every
+    unverified file rolls into one fail-closed problem line so the gate can
+    never report a half-verified run.
+
+    Args:
+        directory: the run's ``raw_seqs`` directory.
+        expected: manifest filename -> expected digest.
+        run_name: included in progress events so they route to the per-run log.
+        max_workers: pool width; production passes ``parallel_downloads``.
     """
     directory = pathlib.Path(directory)
-    problems: list[str] = []
-    for filename, expected_digest in sorted(expected.items()):
-        candidate = directory / filename
-        if not candidate.is_file():
-            problems.append(f"{filename}: named in the manifest but not on disk")
-            continue
-        actual_digest = compute_digest(candidate, _algorithm_for(expected_digest))
-        if actual_digest.lower() != expected_digest.strip().lower():
-            problems.append(
-                f"{filename}: digest mismatch "
-                f"(expected {expected_digest.strip().lower()}, got {actual_digest})"
+    total = len(expected)
+    processed = 0
+    problem_by_filename: dict[str, str] = {}
+    drain_announced = False
+
+    def _announce_draining() -> None:
+        """Warn once the moment the stop is seen.
+
+        Otherwise the operator's Ctrl-C is followed only by more progress
+        lines (the in-flight hashes draining) and reads as "signal ignored"
+        (the 2026-09-11 confusion).
+        """
+        nonlocal drain_announced
+        if not drain_announced:
+            drain_announced = True
+            log.warning(
+                "checksum.draining",
+                **{
+                    "checksum.verified": processed,
+                    "checksum.total": total,
+                    "run.name": run_name,
+                },
             )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_by_filename: dict[concurrent.futures.Future, str] = {}
+        for filename, expected_digest in sorted(expected.items()):
+            if SHUTDOWN.is_set():
+                _announce_draining()
+                break
+            future = executor.submit(
+                _verify_one_file, directory, filename, expected_digest
+            )
+            future_by_filename[future] = filename
+
+        for future in concurrent.futures.as_completed(future_by_filename):
+            if SHUTDOWN.is_set():
+                _announce_draining()
+                for pending in future_by_filename:
+                    pending.cancel()
+            if future.cancelled():
+                continue
+            filename = future_by_filename[future]
+            problem = future.result()
+            if problem is not None:
+                problem_by_filename[filename] = problem
+            processed += 1
+            log.info(
+                "checksum.progress",
+                **{
+                    "checksum.verified": processed,
+                    "checksum.total": total,
+                    "run.name": run_name,
+                },
+            )
+
+    problems = [problem_by_filename[name] for name in sorted(problem_by_filename)]
+    unverified = total - processed
+    if unverified:
+        problems.append(f"shutdown requested — {unverified} file(s) not verified")
     return problems
 
 
@@ -199,7 +294,12 @@ def run_checksum_gate(context: Any) -> GateResult:
             ),
         )
 
-    problems = verify_directory(raw_seqs_dir, expected)
+    problems = verify_directory(
+        raw_seqs_dir,
+        expected,
+        run_name=run_name,
+        max_workers=context.config["parallel_downloads"],
+    )
     if problems:
         shown = "; ".join(problems[:3])
         more = f" (+{len(problems) - 3} more)" if len(problems) > 3 else ""
