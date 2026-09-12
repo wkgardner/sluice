@@ -15,6 +15,7 @@ from sluice.gates.checksum import (
     find_manifests,
     parse_manifests,
     run_checksum_gate,
+    verify_directory,
 )
 from sluice.gates.download import RAW_SEQS_DIRNAME
 
@@ -26,7 +27,7 @@ def make_run(tmp_path, name="run_A"):
     raw_seqs.mkdir(parents=True)
     context = types.SimpleNamespace(
         workdir=workdir,
-        config={},
+        config={"parallel_downloads": 4},
         run_row={"name": name, "experiment_id": 4471},
     )
     return context, raw_seqs
@@ -232,3 +233,131 @@ def test_gate_declares_its_place_and_produces_nothing():
     assert CHECKSUM.satisfied_column == "checksummed"
     assert CHECKSUM.produces == ()
     assert dict(CHECKSUM.persists) == {}
+
+
+def test_verify_directory_stops_on_shutdown(tmp_path):
+    """A set shutdown flag stops verification fail-closed (the 4-hour lesson).
+
+    Every unverified file becomes a problem, so the gate can never report a
+    partially-verified run as checksummed.
+    """
+    from sluice.core import stop
+
+    payload = b"lane data"
+    (tmp_path / "lane1_001.fastq.gz").write_bytes(payload)
+    expected = {"lane1_001.fastq.gz": hashlib.md5(payload).hexdigest()}
+
+    stop.SHUTDOWN.set()
+    try:
+        problems = verify_directory(tmp_path, expected)
+    finally:
+        stop.SHUTDOWN.clear()
+
+    assert len(problems) == 1
+    assert "shutdown requested" in problems[0]
+
+
+def test_verify_directory_emits_per_file_progress(tmp_path):
+    """Each verified file emits a progress event — hours of silence, never again."""
+    import structlog.testing
+
+    payloads = {f"lane{n}_001.fastq.gz": f"data{n}".encode() for n in range(3)}
+    expected = {}
+    for filename, payload in payloads.items():
+        (tmp_path / filename).write_bytes(payload)
+        expected[filename] = hashlib.md5(payload).hexdigest()
+
+    with structlog.testing.capture_logs() as captured:
+        problems = verify_directory(tmp_path, expected, run_name="RUN_A")
+
+    assert problems == []
+    progress = [e for e in captured if e["event"] == "checksum.progress"]
+    assert len(progress) == 3
+    assert progress[-1]["checksum.verified"] == 3
+    assert progress[-1]["checksum.total"] == 3
+    assert progress[-1]["run.name"] == "RUN_A"
+
+
+def test_verify_directory_hashes_files_in_parallel(tmp_path, monkeypatch):
+    """Three files with three workers hash CONCURRENTLY, poller-style.
+
+    The barrier only releases when all three digest computations are in flight
+    at once — a sequential implementation deadlocks it and times out. This is
+    the poller's verify_checksums shape (ThreadPoolExecutor + as_completed);
+    the 4-hour sequential checksum of 3aa/3af was the cost of losing it.
+    """
+    import threading
+
+    barrier = threading.Barrier(3, timeout=10)
+
+    def digest_after_rendezvous(file_path, algorithm):
+        barrier.wait()
+        return "match"
+
+    monkeypatch.setattr("sluice.gates.checksum.compute_digest", digest_after_rendezvous)
+
+    expected = {}
+    for n in range(3):
+        filename = f"lane{n}_001.fastq.gz"
+        (tmp_path / filename).write_bytes(b"data")
+        expected[filename] = "match"
+
+    problems = verify_directory(tmp_path, expected, max_workers=3)
+    assert problems == []
+
+
+def test_verify_directory_reports_problems_in_filename_order(tmp_path):
+    """Problems are deterministic by filename, not by thread completion order."""
+    (tmp_path / "b_lane_001.fastq.gz").write_bytes(b"wrong")
+    expected = {
+        "b_lane_001.fastq.gz": hashlib.md5(b"right").hexdigest(),
+        "a_missing_001.fastq.gz": hashlib.md5(b"gone").hexdigest(),
+    }
+
+    problems = verify_directory(tmp_path, expected, max_workers=4)
+
+    assert len(problems) == 2
+    assert problems[0].startswith("a_missing_001.fastq.gz:")
+    assert problems[1].startswith("b_lane_001.fastq.gz:")
+
+
+def test_shutdown_announces_draining_once(tmp_path):
+    """The moment the flag is seen, one ``checksum.draining`` line is emitted.
+
+    Without it, an operator's Ctrl-C is followed only by MORE progress lines
+    (the in-flight hashes draining), which reads as "signal ignored" — the
+    exact confusion of 2026-09-11. One warning says: acknowledged, finishing
+    what's in flight, then stopping.
+    """
+    import structlog.testing
+
+    from sluice.core import stop
+
+    payloads = {f"lane{n}_001.fastq.gz": f"data{n}".encode() for n in range(3)}
+    expected = {}
+    for filename, payload in payloads.items():
+        (tmp_path / filename).write_bytes(payload)
+        expected[filename] = hashlib.md5(payload).hexdigest()
+
+    import sluice.gates.checksum as checksum_module
+
+    real = checksum_module.compute_digest
+
+    def digest_then_request_shutdown(file_path, algorithm):
+        digest = real(file_path, algorithm)
+        stop.SHUTDOWN.set()
+        return digest
+
+    try:
+        with structlog.testing.capture_logs() as captured:
+            checksum_module.compute_digest = digest_then_request_shutdown
+            try:
+                problems = verify_directory(tmp_path, expected, max_workers=1)
+            finally:
+                checksum_module.compute_digest = real
+    finally:
+        stop.SHUTDOWN.clear()
+
+    draining = [e for e in captured if e["event"] == "checksum.draining"]
+    assert len(draining) == 1
+    assert any("shutdown requested" in problem for problem in problems)
