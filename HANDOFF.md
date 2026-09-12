@@ -1657,6 +1657,82 @@ actually protected.
    **The daemon is now safe to restart: Ctrl-C works mid-download, and the umbrella
    re-download of `20260828…` will skip everything already present and fetch only raw
    fastqs + manifests.**
+3af. ✅ **THE INVISIBLE-CHECKSUM INCIDENT — LOG SINKS WIRED, CHECKSUM MADE OBSERVABLE AND
+   STOPPABLE** 2026-09-08/09 (CHTC session). The 20260828 beta run's download succeeded
+   (753 files — the 3ae scope filter working) and then the checksum gate ran **four hours
+   with zero output and immune to Ctrl-C**; Will killed it (-9, D-state on a CephFS folio
+   wait; ~43 min of hash CPU discarded, checksum idempotently redoes). Root causes, all
+   fixed TDD red-green; suite **762 passed**, lint clean, uncommitted:
+   - **`configure_logging` was built, tested, exported — and called by NOBODY.** Every
+     daemon so far logged to console only; `events.jsonl` and the per-run logs never
+     existed. The CLI `daemon` command now calls it right after `load_config`, pinned by a
+     behavioral CLI test (file sinks exist after `daemon --once`), and verified live
+     against the real install (paused one-cycle start; JSON lines on disk).
+   - **`verify_directory` now emits `checksum.progress` after every file** (verified/total
+     + `run.name` so it routes to the per-run log) — a multi-TB hash can no longer be
+     mistaken for a hang — **and checks `core.stop.SHUTDOWN` before every file**: one
+     Ctrl-C finishes the current file and fails closed ("shutdown requested — N file(s)
+     not verified"), the Bug B pattern extended to the second long-running gate.
+   - F-B6's "revisit on a real observed hang" trigger has now fired once; NVD remains the
+     one long gate with no cooperative stop (its work is an external nextflow process —
+     different problem, noted not fixed).
+   - Same session: the poller raced sluice on the new week's run `20260904…` (poller mid-NVD
+     for exp 32592) — fenced with an audited skip (#197) until the poller finishes it.
+   **Next: restart the daemon (checksum redoes with progress lines this time), watch
+   20260828 through samplesheet → NVD to the first sluice-computed `run.finished`.**
+3ag. ✅ **CHECKSUM PARALLELIZED — THE POLLER'S verify_checksums SHAPE PORTED** 2026-09-08
+   (same session as 3af). Will asked why the poller's checksum was fast: it hashed on a
+   ThreadPoolExecutor sized by ``parallel_downloads`` (32 in production, PP
+   ``poller.py:786``) while sluice's port was a sequential loop — the gate map's
+   "re-verify is fast" (PP :1601) carried the idempotence but not the parallelism that
+   made it true. ``verify_directory`` now mirrors the poller: a PURE per-file worker
+   (returns, never logs — D6), submit-all + as_completed, main-thread
+   ``checksum.progress`` per completion, problems ordered by filename for determinism,
+   and the 3af cooperative stop preserved (flag checked at submission and between
+   completions; unstarted futures cancelled; unverified files roll into one fail-closed
+   problem). Pool width from ``config["parallel_downloads"]`` — no new key, poller
+   parity. Concurrency pinned by a barrier test that deadlocks a sequential
+   implementation. Suite **764 passed**, lint clean, uncommitted (with 3af's fixes).
+   Expected effect: the 20260828 re-checksum drops from ~4+ h sequential to tens of
+   minutes at 32 workers (CephFS contention with the poller's in-flight NVD permitting).
+3ah. ✅ **IDLE IS NOW VISIBLE — PER-CYCLE SUMMARY LINE + ALL LOGS MOVED TO THE PROJECT DIR**
+   2026-09-11 (CHTC session). Will's report: "sluice daemon does nothing, it just shows a
+   hang / I have not a clue what is going on." Diagnosis from the (now-working) file logs:
+   the daemon was HEALTHY and idle — `20260828…` was quarantined (the 3af cooperative
+   checksum stop firing on his Ctrl-C, exactly as designed; the earlier clear-error had
+   died on a tool error before executing), `20260904…` fenced for the poller, everything
+   else skipped — and an idle cycle emitted NOTHING, making healthy-idle and wedged
+   indistinguishable on stdout. Two changes, TDD; suite **765 passed**, lint clean,
+   uncommitted (with 3af/3ag):
+   - **`daemon.cycle` — one summary line per look, always**: status, detected, eligible,
+     driven tokens, and the fence counts (skipped / held / quarantined) so the line
+     literally answers "why is nothing moving"; the paused / disk-paused early returns
+     emit a status-only variant. Pinned by an idle-cycle test.
+   - **All log destinations moved into the repo working copy by Will's request**
+     (untracked under the deny-all .gitignore): `events_file` and `nvd_log_dir` →
+     `~/sluice/logs/…` joining his earlier `run_events_dir` edit; stale
+     poll-interval comment corrected (now 1 min). Verified live: a paused one-cycle
+     start wrote `daemon.cycle` into `~/sluice/logs/events.jsonl`.
+   - Quarantine on `20260828…` cleared (audit #204); daemon stopped cleanly via plain
+     SIGTERM (idle-loop signal handling works; only mid-gate work ever needed the flag).
+   **Ready state: run active, checksum will redo PARALLEL (3ag) on next `sluice daemon`.**
+3ai. ✅ **THE COOPERATIVE STOP WORKED — WHAT LOOKED LIKE THE SIGINT BUG WAS THE DRAIN,
+   NOW ANNOUNCED** 2026-09-11 evening. Will Ctrl-C'd the parallel checksum and saw only
+   more progress lines — "same sigint issue again." The logs say otherwise: first SIGINT
+   20:49:14 at 424/752, the 32 in-flight multi-GB hashes drained to 448 over 38 s, then
+   the gate failed closed ("shutdown requested — 304 file(s) not verified"), the run
+   quarantined, and the daemon EXITED CLEANLY at 20:49:52 — Ctrl-C to prompt with no
+   kill -9, versus Tuesday. (Also: 448 files in 13.4 min ≈ 1.8 s/file — 3ag's parallel
+   gate is ~26x the sequential pace.) The defect was silence about the acknowledgement:
+   nothing between the SIGINT and the exit says "stop accepted, draining." Fixed TDD:
+   **one `checksum.draining` warning the moment the flag is first seen** (verified/total
+   + run.name), emitted from either the submission or completion loop, exactly once.
+   Suite **766 passed**, lint clean, uncommitted (with 3af-3ah). Quarantine cleared
+   again (audit #206) — the run is active and ready.
+   - ~~Standing design question~~ → **DECIDED by Will 2026-09-11: keep as-is.** An
+     operator stop mid-gate quarantines the run and `clear-error` is the release valve —
+     no stopped-not-failed outcome tier. ADR-0002's single recovery path stands; the
+     outcome vocabulary stays closed.
 4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
    is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
    remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`
