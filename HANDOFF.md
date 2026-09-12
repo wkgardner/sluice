@@ -1769,6 +1769,20 @@ actually protected.
      DEPLOYMENT INPUT — any NVD upgrade needs this params re-validation before the next
      daemon start. Candidate for doctor increment B (probe: merge the generated yaml
      through py_nvd, exactly as done here).
+3al. ✅ **CUTOVER PARITY AUDIT: THE TWO DATABASES AGREE** 2026-09-12. Fresh read-only
+   snapshot of the poller DB cross-referenced against sluice's, run by run: **80 runs on
+   each side, identical name sets** (the poller completed `20260904…` since the seed;
+   sluice already had it fenced), **79/80 cleanly skipped, zero experiment-id
+   disagreements**. The single divergence is deliberate: `20260828…` active in sluice
+   (the beta run, mid-checksum-redo) vs completed in the poller. The drain is complete —
+   nothing is in flight anywhere. `slack_enabled` flipped ON in the operator config
+   (safe: `make_notifier` runs silent with a logged reason until the empty
+   `secrets/slack_bot_token` is filled). **Cutover checklist handed to Will:** fill the
+   two Slack secret files → STOP python-poller (his action; the guardrail keeps sluice's
+   hands off it) → `sluice doctor` → start the daemon (the active `20260828…` run
+   doubles as the first live NVD launch, uploading to TEST lists) → after confidence,
+   point `nvd_labkey_blast_fasta_list` / `nvd_labkey_blast_meta_hits_list` back at the
+   production lists (currently test values by Will's own edit).
 4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
    is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
    remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`
