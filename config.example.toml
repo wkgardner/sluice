@@ -160,6 +160,14 @@ nvd_dedup = true
 # Whether to trim sequencing adapters before analysis.
 nvd_trim_adapters = true
 
+# Whether to enable NVD's experimental release-candidate features. Production
+# has always run true.
+nvd_experimental = true
+
+# Whether to filter reads below NVD's minimum 5-mer entropy. Production has
+# always run true.
+nvd_filter_low_complexity_reads = true
+
 [nvd_labkey_upload]
 
 # Whether NVD uploads its results to LabKey at all.
@@ -180,10 +188,6 @@ nvd_labkey_blast_fasta_list = "<nvd_labkey_blast_fasta_list>"
 
 # LabKey list receiving the expanded metagenomic BLAST hits.
 nvd_labkey_blast_meta_hits_list = "<nvd_labkey_blast_meta_hits_list>"
-
-# LabKey list NVD uses to make its own upload idempotent — as load-bearing as
-# the two hit lists, and as easy to point at the wrong container.
-nvd_labkey_exp_id_guard_list = "<nvd_labkey_exp_id_guard_list>"
 
 [slack]
 

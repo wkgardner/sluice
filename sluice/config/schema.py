@@ -413,6 +413,24 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
         default=True,
     ),
     ConfigField(
+        "nvd_experimental",
+        FieldKind.VALUE,
+        "nvd analysis",
+        "Whether to enable NVD's experimental release-candidate features. "
+        "Production has always run true.",
+        probe=ProbeKind.NONE,
+        default=True,
+    ),
+    ConfigField(
+        "nvd_filter_low_complexity_reads",
+        FieldKind.VALUE,
+        "nvd analysis",
+        "Whether to filter reads below NVD's minimum 5-mer entropy. "
+        "Production has always run true.",
+        probe=ProbeKind.NONE,
+        default=True,
+    ),
+    ConfigField(
         "nvd_trim_adapters",
         FieldKind.VALUE,
         "nvd analysis",
@@ -470,15 +488,6 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
         FieldKind.VALUE,
         "nvd labkey upload",
         "LabKey list receiving the expanded metagenomic BLAST hits.",
-        probe=ProbeKind.ENDPOINT,
-    ),
-    ConfigField(
-        "nvd_labkey_exp_id_guard_list",
-        FieldKind.VALUE,
-        "nvd labkey upload",
-        "LabKey list NVD uses to make its own upload idempotent — as "
-        "load-bearing as the two hit lists, and as easy to point at the wrong "
-        "container.",
         probe=ProbeKind.ENDPOINT,
     ),
     # -- Slack --------------------------------------------------------------
