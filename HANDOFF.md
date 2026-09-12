@@ -1733,6 +1733,20 @@ actually protected.
      operator stop mid-gate quarantines the run and `clear-error` is the release valve —
      no stopped-not-failed outcome tier. ADR-0002's single recovery path stands; the
      outcome vocabulary stays closed.
+3aj. ✅ **OFFLINE FULL-GATE REHEARSAL — FIRST SLUICE-COMPUTED `completed`** 2026-09-11.
+   `~/.sluice/rehearsal_dry_run.py` (operator tooling, re-runnable, sandbox under
+   `~/.sluice/rehearsal/` wiped each run): a synthetic run driven through the REAL
+   production gates using the designed rehearsal seams — `local_source_dir` mode (no
+   Mizzou), a pre-seeded fake `experiment_id` (resume-first: zero LabKey calls, no key
+   read), and `exclude_gate('nvd')` (the audited ADR-0004 op) so the pipeline never
+   launches while the samplesheet gate still exercises NVD's real `samplesheet
+   generate` CLI locally. Result, first try, ~4 s: **experiment → download → checksum →
+   samplesheet all SUCCESS, `run.finished outcome=completed`** — reconcile computing
+   completion from the shrunken contract with `nvd_completed=0`. What it deliberately
+   does NOT prove: the real `nvd run` launch (the one unexercised gate) and the remote
+   listing/transfer path (already proven live this week against Mizzou). The 3af-3ai
+   fixes are committed (`3c11368`..`7d30066`); the 3ai stop-equals-quarantine decision
+   is stamped DECIDED (keep as-is).
 4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
    is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
    remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`
