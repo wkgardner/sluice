@@ -1780,9 +1780,16 @@ actually protected.
    `secrets/slack_bot_token` is filled). **Cutover checklist handed to Will:** fill the
    two Slack secret files → STOP python-poller (his action; the guardrail keeps sluice's
    hands off it) → `sluice doctor` → start the daemon (the active `20260828…` run
-   doubles as the first live NVD launch, uploading to TEST lists) → after confidence,
-   point `nvd_labkey_blast_fasta_list` / `nvd_labkey_blast_meta_hits_list` back at the
-   production lists (currently test values by Will's own edit).
+   doubles as the first live NVD launch).
+   **Superseded same day:** Will chose to cut the upload targets over immediately —
+   `nvd_labkey_blast_fasta_list`/`nvd_labkey_blast_meta_hits_list` now carry the
+   PRODUCTION names, verified against the poller's last successful v3.4.1 params file
+   (32592.yaml) and round-tripped through `NvdParams.merge` (VALID, experimental=True,
+   filter=True). Duplicate-upload risk for the shakedown run checked and CLEARED:
+   v3.4 removed the guard list because **the destination list is its own completion
+   ledger** (`labkey_io.rows_present` per (sample_id, query_class) unit) — re-running
+   NVD for 32575 skips rows the poller already inserted. Remaining before daemon
+   start: fill the two Slack secrets, stop python-poller, `sluice doctor`.
 4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
    is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
    remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`
