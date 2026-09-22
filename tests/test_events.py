@@ -240,8 +240,8 @@ def test_notifier_protocol_names_the_three_run_lifecycle_methods():
     # would fail collection for every other test in this file.
     from sluice.core.events import Notifier
 
-    class FakeWithAllThreeLifecycleMethods:
-        """Minimal structural fake: exactly the three Protocol methods."""
+    class FakeWithAllFourLifecycleMethods:
+        """Minimal structural fake: exactly the four Protocol methods."""
 
         def open_run_thread(self, run_name, experiment_id=None, size_tb=None):
             return None
@@ -250,6 +250,9 @@ def test_notifier_protocol_names_the_three_run_lifecycle_methods():
             return None
 
         def finish_run_thread(self, run_name, outcome, reason=None):
+            return None
+
+        def update_run_header(self, run_name):
             return None
 
     class FakeMissingFinishRunThread:
@@ -261,10 +264,14 @@ def test_notifier_protocol_names_the_three_run_lifecycle_methods():
         def post_milestone(self, run_name, text, mention=False):
             return None
 
-    assert isinstance(FakeWithAllThreeLifecycleMethods(), Notifier), (
-        "an object defining exactly open_run_thread/post_milestone/"
-        "finish_run_thread must satisfy the runtime-checkable Notifier "
-        "Protocol (plan 03 §3.1)"
+        def update_run_header(self, run_name):
+            return None
+
+    assert isinstance(FakeWithAllFourLifecycleMethods(), Notifier), (
+        "an object defining open_run_thread/post_milestone/finish_run_thread/"
+        "update_run_header must satisfy the runtime-checkable Notifier "
+        "Protocol (plan 03 §3.1; fourth method added by user decision "
+        "2026-09-22)"
     )
     assert not isinstance(FakeMissingFinishRunThread(), Notifier), (
         "an object missing finish_run_thread must NOT satisfy the Notifier "
