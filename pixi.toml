@@ -22,3 +22,6 @@ ruff = ">=0.14,<0.15"
 typer = "*"
 rich = "*"
 slack-sdk = "*"
+
+[pypi-dependencies]
+labkey = ">=3.4.0"
