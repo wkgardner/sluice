@@ -1790,6 +1790,24 @@ actually protected.
    ledger** (`labkey_io.rows_present` per (sample_id, query_class) unit) — re-running
    NVD for 32575 skips rows the poller already inserted. Remaining before daemon
    start: fill the two Slack secrets, stop python-poller, `sluice doctor`.
+3am. ✅ **CUTOVER-EVE SYNC + FIRST SLACK NOTIFICATION** 2026-09-22. Will's test
+   notification SENT through sluice's real notifier path (`make_notifier` → `_post`,
+   Slack API ok) after the two Slack secrets were copied in (0-byte placeholders until
+   today); reusable test at `~/.sluice/slack_test.py`. `sluice doctor`: **all checks
+   passed** (one missing log dir created). DB re-synced to the poller (83 folders →
+   seeder re-run fenced the three new ones), then two user decisions applied:
+   - **exp 32627 (`20260918…0218`, poller-completed today) DELETED from sluice**
+     (audited) so detection re-creates it ACTIVE and sluice reruns it in full — the
+     first real end-to-end flight. Note: gate 0 will lookup-before-create on LabKey and
+     should ADOPT 32627 by description; pre-seeding the id is the zero-call alternative
+     if adoption is doubted.
+   - **exp 32623 (`20260918…0217`) stays fenced** — the poller QUARANTINED it 2026-09-21
+     (NVD pipeline failure); its fence reason now says so (audited unskip→skip; the
+     seeder's blanket "completed by poller" reason was wrong for this run).
+   - Side effect owned: the seeder re-run also re-fenced `20260828…` (poller-completed);
+     the 0218 rerun replaces it as the shakedown. State: **82 runs, zero active** until
+     detection re-creates 0218. python-poller still RUNNING — stop it before
+     `sluice daemon`, or both will process and post.
 4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
    is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
    remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`
