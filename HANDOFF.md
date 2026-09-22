@@ -1808,6 +1808,28 @@ actually protected.
      the 0218 rerun replaces it as the shakedown. State: **82 runs, zero active** until
      detection re-creates 0218. python-poller still RUNNING — stop it before
      `sluice daemon`, or both will process and post.
+3an. ✅ **CUTOVER NIGHT — FIRST FULL SLUICE FLIGHT, OPERATOR-STOPPED IN NVD BY CHOICE**
+   2026-09-22 evening. The 32627 rerun (`20260918…0218`) flew the whole pipeline live:
+   - First real LabKey client build EVER exposed the missing `labkey` pypi dep
+     (lazy import + every prior run resume-first; quarantined on ModuleNotFoundError,
+     and the 🚨 Slack @-mention for it was sluice's FIRST production notification).
+     Fixed (`48570d9`, spec matches the poller), cleared, and the RUNNING daemon picked
+     the package up without restart.
+   - **Gate 0 adopted experiment 32627 by lookup** (1.0 s, one API call, no duplicate —
+     C1's closure working on its first real outing). Download: 641 files re-verified in
+     81 s. Parallel checksum: 640 files in ~21 min. Samplesheet: 0.8 s.
+     **First sluice-launched `nvd run` in history** at 22:38 (local launch dir, log
+     streaming, heartbeats).
+   - A concurrent colleague-run nextflow on a `32627.yml` caused a scare — confirmed by
+     Will as unrelated read-processing outside NVD; no collision.
+   - Will then chose to stop mid-NVD: documented procedure executed — `sluice pause` +
+     SIGTERM to the Nextflow java (graceful: CHTC jobs cancelled, session checkpoint
+     saved) → nvd gate failed closed (exit 1, log pointer) → run QUARANTINED RESUMABLY
+     → daemon idle-paused. Resume path: `clear-error` + `resume` → `-resume` from
+     checkpoint.
+   - **Open gap re-confirmed:** NVD is the one long gate the cooperative SHUTDOWN flag
+     cannot reach; stopping it means manual SIGTERM to the child. Next fix candidate:
+     the gate's `_stream_to_log` loop watches the flag and TERMs its child.
 4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
    is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
    remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`
