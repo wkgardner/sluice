@@ -1830,6 +1830,21 @@ actually protected.
    - **Open gap re-confirmed:** NVD is the one long gate the cooperative SHUTDOWN flag
      cannot reach; stopping it means manual SIGTERM to the child. Next fix candidate:
      the gate's `_stream_to_log` loop watches the flag and TERMs its child.
+3ao. ✅ **SLACK THREAD UPGRADES — NVD START ANNOUNCED, PARENT HEADER GAINS THE EXPERIMENT
+   ID** 2026-09-22 (user request after reviewing cutover night's thread). Two gaps in the
+   live thread: hours of silence between "samplesheet completed" and NVD's terminal
+   outcome, and a parent message reading "exp pending" forever. Both TDD; **770 passed**,
+   lint clean.
+   - `GATES_ANNOUNCED_AT_START = ("nvd",)` in the daemon: gates on that list post
+     "<name> started" BEFORE running — only the hours-long ones, so threads stay tight.
+   - **The Notifier Protocol is now FOUR methods** (supersedes plan 03 ⚑4's three-method
+     pin, user-decided): `update_run_header(run_name)` rewrites the parent from the
+     current row via `chat_update` on the stored `slack_thread_ts` (template mirrors
+     `open_run_thread`, so metadata never drops). The daemon calls it whenever a gate
+     persist lands `experiment_id`. Protocol pin test updated to four; a same-shape edit
+     initially landed the method on the WRONG structural fake (both fakes end
+     identically) — caught by the pin failing, a good pin doing its job.
+   Takes effect on next daemon restart.
 4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
    is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
    remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`

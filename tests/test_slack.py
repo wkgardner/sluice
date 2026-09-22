@@ -21,6 +21,7 @@ class FakeSlackClient:
 
     def __init__(self, *, fail=False, ts="1722600000.000100"):
         self.posts = []
+        self.updates = []
         self.fail = fail
         self.ts = ts
 
@@ -28,6 +29,12 @@ class FakeSlackClient:
         if self.fail:
             raise RuntimeError("slack is down")
         self.posts.append({"channel": channel, "text": text, "thread_ts": thread_ts})
+        return {"ok": True, "ts": self.ts}
+
+    def chat_update(self, *, channel, ts, text):
+        if self.fail:
+            raise RuntimeError("slack is down")
+        self.updates.append({"channel": channel, "ts": ts, "text": text})
         return {"ok": True, "ts": self.ts}
 
 
@@ -299,3 +306,33 @@ def test_an_unconfigured_notifier_is_none_not_an_error(config, why, monkeypatch)
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
 
     assert make_notifier(config, db_path=":memory:") is None, why
+
+
+def test_update_run_header_rewrites_the_parent_with_the_experiment_id(state_db):
+    """Once the experiment id exists, the parent stops saying "exp pending".
+
+    Production request 2026-09-22: the thread parent posted at detection reads
+    "exp pending" forever, even after gate 0 stamps the id — the one line
+    everyone scans for the experiment number.
+    """
+    client = FakeSlackClient()
+    notifier = notifier_for(state_db, client)
+    with write_txn(state_db) as connection:
+        update_run(connection, "SEQ_001", {"slack_thread_ts": "1722600000.000100"})
+
+    notifier.update_run_header("SEQ_001")
+
+    assert len(client.updates) == 1
+    updated = client.updates[0]
+    assert updated["ts"] == "1722600000.000100"
+    assert "SEQ_001" in updated["text"]
+    assert "exp 4471" in updated["text"]
+    assert "exp pending" not in updated["text"]
+
+
+def test_update_run_header_without_a_thread_is_a_no_op(state_db):
+    """No parent message, nothing to rewrite — never posts, never raises."""
+    client = FakeSlackClient()
+    notifier_for(state_db, client).update_run_header("SEQ_001")
+    assert client.updates == []
+    assert client.posts == []

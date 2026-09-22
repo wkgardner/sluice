@@ -211,6 +211,36 @@ class SlackNotifier:
         response = self._post(text)
         return response.get("ts") if response else None
 
+    def update_run_header(self, run_name: str) -> None:
+        """Rewrite the parent message from the run's current row (exp id, size).
+
+        No thread yet (or no row) means nothing to rewrite — a silent no-op,
+        matching ``open_run_thread``'s idempotence. The text template mirrors
+        ``open_run_thread`` exactly so an update never drops metadata
+        (the ``_format_metadata`` lesson, PP ``_terminal_title``).
+        """
+        row = self._run_row(run_name)
+        if row is None or not row["slack_thread_ts"]:
+            return
+        text = (
+            f"▶ *{run_name}*\n"
+            f"{_format_metadata(row['experiment_id'], row['size_tb'])}\n"
+            "Status: processing"
+        )
+        try:
+            self._client.chat_update(
+                channel=self._channel, ts=row["slack_thread_ts"], text=text
+            )
+        except Exception as update_error:
+            # Same posture as _post: a Slack failure never fails work.
+            log.error(
+                "slack.update_failed",
+                **{
+                    "slack.channel": self._channel,
+                    "error.type": type(update_error).__name__,
+                },
+            )
+
     def post_milestone(self, run_name: str, text: str, mention: bool = False) -> None:
         """Post a milestone as a reply in the run's thread.
 

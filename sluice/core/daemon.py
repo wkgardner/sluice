@@ -561,6 +561,13 @@ def _quarantine_without_gate(db_path, run_name, reason: str, notifier) -> str:
     return "quarantined"
 
 
+# Gates announced in Slack BEFORE they run: the hours-long ones that would
+# otherwise leave the thread silent between the previous milestone and their
+# terminal outcome (production request 2026-09-22 — NVD launched with nothing
+# in the channel saying so).
+GATES_ANNOUNCED_AT_START = ("nvd",)
+
+
 def process_run(config, run_name, *, registry, notifier=None, should_stop=None) -> str:
     """Drive one run through its gates until it blocks, one gate per look.
 
@@ -647,6 +654,10 @@ def process_run(config, run_name, *, registry, notifier=None, should_stop=None) 
         # write_txn opens only AFTER this returns (short transactions, §5).
         started = time.monotonic()
         try:
+            if gate.id in GATES_ANNOUNCED_AT_START:
+                safe_notify(
+                    notifier, "post_milestone", run_name, f"{gate.name} started"
+                )
             result = gate.run(context)
         except Exception as gate_error:  # noqa: BLE001 — an escape becomes FAILURE
             # §3.4: a raised gate never dies the loop; it becomes a quarantine.
@@ -703,6 +714,10 @@ def process_run(config, run_name, *, registry, notifier=None, should_stop=None) 
             with write_txn(db_path) as connection:
                 update_run(connection, run_name, fields)
             emit_gate_event(run_name, gate, result, duration_ms=duration_ms)
+            if "experiment_id" in fields:
+                # The parent message said "exp pending" until now — rewrite it
+                # with the id everyone scans the channel for.
+                safe_notify(notifier, "update_run_header", run_name)
             safe_notify(notifier, "post_milestone", run_name, f"{gate.name} completed")
             continue  # drive the next gate
 

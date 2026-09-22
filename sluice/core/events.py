@@ -56,6 +56,16 @@ class Notifier(Protocol):
         """Open the run's notification thread; return its id (the A5 seam) or ``None``."""
         ...
 
+    def update_run_header(self, run_name: str) -> None:
+        """Rewrite the run's parent message with late-arriving metadata.
+
+        Added 2026-09-22 (supersedes the plan 03 ⚑4 three-method pin, by
+        user decision): the parent posted at detection reads "exp pending"
+        until gate 0 stamps the experiment id, and that id is the one value
+        everyone scans the channel for.
+        """
+        ...
+
     def post_milestone(self, run_name: str, text: str, mention: bool = False) -> None:
         """Post a milestone message to the run's thread."""
         ...

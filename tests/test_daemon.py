@@ -122,6 +122,10 @@ class RecordingNotifier:
         self.calls.append(("open_run_thread", run_name))
         return None
 
+    def update_run_header(self, run_name):
+        """Record a parent-header rewrite."""
+        self.calls.append(("update_run_header", run_name))
+
     def post_milestone(self, run_name, text, mention=False):
         """Record a milestone post."""
         self.calls.append(("post_milestone", run_name, text))
@@ -1938,3 +1942,55 @@ def test_a_cycle_with_nothing_to_do_still_logs_a_summary(prepared):
     assert line["cycle.skipped"] == 0
     assert line["cycle.held"] == 0
     assert line["cycle.quarantined"] == 0
+
+
+def test_persisting_an_experiment_id_updates_the_thread_header(prepared):
+    """A gate persist that lands ``experiment_id`` refreshes the Slack parent.
+
+    The daemon, as the sole notifier caller, follows the ADR-0006 persist with
+    ``update_run_header`` so the thread parent stops reading "exp pending".
+    """
+    persist_gate = Gate(
+        id="persist_gate",
+        name="Persist probe",
+        satisfied_column="mock_alpha_done",
+        order=1,
+        needs=(),
+        produces=(),
+        run=lambda context: GateResult(GateOutcome.SUCCESS, metadata={"exp": 4242}),
+        invalidate=lambda context: None,
+        persists={"exp": "experiment_id"},
+    )
+    version, registry = _single_gate_registry(persist_gate)
+    with write_txn(prepared["state_file"]) as connection:
+        insert_run(connection, "header_run", pipeline_version=version)
+    notifier = RecordingNotifier()
+
+    process_run(prepared, "header_run", registry=registry, notifier=notifier)
+
+    assert ("update_run_header", "header_run") in notifier.calls
+
+
+def test_announced_gates_post_a_started_milestone(prepared, monkeypatch):
+    """Gates in ``GATES_ANNOUNCED_AT_START`` post "<name> started" before running.
+
+    Production request 2026-09-22: NVD runs for hours, and the Slack thread
+    jumped from "samplesheet completed" straight to the terminal outcome with
+    nothing saying the pipeline had launched.
+    """
+    import sluice.core.daemon as daemon_module
+
+    monkeypatch.setattr(daemon_module, "GATES_ANNOUNCED_AT_START", ("mock_alpha",))
+    notifier = RecordingNotifier()
+    _detect(prepared, "announce_run", notifier=notifier)
+
+    process_run(
+        prepared, "announce_run", registry=REFERENCE_PROFILES, notifier=notifier
+    )
+
+    started = [
+        c for c in notifier.calls if c[0] == "post_milestone" and "started" in c[2]
+    ]
+    assert len(started) == 1
+    assert started[0][1] == "announce_run"
+    assert started[0][2] == f"{MOCK_ALPHA.name} started"
