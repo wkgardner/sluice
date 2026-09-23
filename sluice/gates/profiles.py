@@ -113,8 +113,9 @@ PRODUCTION_PROFILE: Profile = build_profile(
 """The current live contract (``production-v3.2``): v3.1 plus ``profiling`` at order 4.
 
 ``profiling`` runs silly-fast-bfx (Deacon + Sylph) over the samplesheet before NVD. A profiling
-failure quarantines the run, so NVD waits: the operator fixes and ``clear_error``s, or
-``exclude profiling`` lets that one run go on to NVD.
+failure quarantines the run, so NVD waits: the operator fixes and ``clear_error``s. (Excluding
+``profiling`` for one run would let it go on to NVD, but ``control.exclude_gate`` is not on the CLI
+yet.)
 
 A new gate means a new version, never an edit to a shipped one: copy the newest list, add the gate,
 bump ``PRODUCTION_VERSION``, register it below, and switch the live DB with
