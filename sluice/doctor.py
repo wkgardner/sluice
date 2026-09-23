@@ -31,6 +31,7 @@ from sluice.core.db import MIGRATIONS, schema_version
 from sluice.gates.detection import SOURCE_DIR_KEY, is_local_mode
 from sluice.gates.nvd import resolve_launch_dir
 from sluice.gates.nvd_tool import NvdToolError, build_nvd_command, nvd_manifest_path
+from sluice.gates.profiling import ProfilingError, resolve_profiling_launch_dir
 from sluice.gates.slack import TOKEN_ENV_VAR
 
 __all__ = [
@@ -404,6 +405,9 @@ GATE_CONFIG_GROUPS: Mapping[str, tuple[str, ...]] = {
         "storage",
         "labkey",
     ),
+    # "storage" for the same D2 reason as nvd: resolve_profiling_launch_dir
+    # reads local_staging_dir to refuse a launch base inside the staging tree.
+    "profiling": ("profiling", "storage"),
 }
 
 # Config groups that are not a gate's. `sluice state` is universal; `slack`
@@ -651,6 +655,50 @@ def _launch_base_check() -> Check:
     return Check("nvd_launch_base_is_local", "nvd", run)
 
 
+def _profiling_launch_base_check() -> Check:
+    """Assert the profiling launch base does not sit inside the staging tree (errata D2).
+
+    The ``profiling`` twin of ``_launch_base_check``, copied rather than shared
+    so the NVD check stays untouched. Asked of ``resolve_profiling_launch_dir``
+    itself, so doctor's answer is the gate's answer. Besides ``-resume`` doing
+    nothing on shared storage, the site config's relative ``submitFileDir``
+    lands in the launch dir, and HTCondor cannot submit from staging at all.
+
+    Skipped unless both keys hold a real value.
+    """
+
+    def run(config: Mapping) -> CheckResult:
+        unusable = [
+            key
+            for key in ("profiling_launch_base", "local_staging_dir")
+            if not _has_real_value(config, key)
+        ]
+        if unusable:
+            return CheckResult(
+                "profiling_launch_base_is_local",
+                "profiling",
+                Severity.SKIP,
+                f"{' and '.join(unusable)} not usable yet",
+            )
+        try:
+            resolve_profiling_launch_dir(config, "doctor")
+        except ProfilingError as refused:
+            return CheckResult(
+                "profiling_launch_base_is_local",
+                "profiling",
+                Severity.FAIL,
+                str(refused),
+            )
+        return CheckResult(
+            "profiling_launch_base_is_local",
+            "profiling",
+            Severity.OK,
+            "profiling_launch_base is outside local_staging_dir",
+        )
+
+    return Check("profiling_launch_base_is_local", "profiling", run)
+
+
 def _unregistered_gate_check(gate_id: str) -> Check:
     """Fail loudly for a profile gate doctor has no configuration map for.
 
@@ -744,6 +792,8 @@ def select_checks(
         checks.append(_source_mode_check())
     if "nvd" in gate_ids:
         checks.append(_launch_base_check())
+    if "profiling" in gate_ids:
+        checks.append(_profiling_launch_base_check())
     return tuple(checks)
 
 

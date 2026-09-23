@@ -844,3 +844,49 @@ def test_a_launch_base_inside_the_staging_tree_fails(tmp_path, registry):
     assert [r for r in healthy if r.check_id == "nvd_launch_base_is_local"][
         0
     ].severity is Severity.OK
+
+
+def test_a_profiling_launch_base_inside_the_staging_tree_fails(tmp_path, registry):
+    """The same D2 cross-field rule, for the profiling gate's launch base.
+
+    Worse here than for NVD in one way: the site config's relative
+    ``submitFileDir`` lands inside the launch dir, and HTCondor cannot submit
+    from the staging tree at all.
+    """
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    inside = staging / "profiling-launch"
+    inside.mkdir()
+
+    results = run_doctor(
+        {"local_staging_dir": str(staging), "profiling_launch_base": str(inside)},
+        registry,
+        PRODUCTION_VERSION,
+    )
+    launch = [r for r in results if r.check_id == "profiling_launch_base_is_local"]
+
+    assert launch and launch[0].severity is Severity.FAIL
+    assert "local_staging_dir" in launch[0].detail
+
+    unfilled = run_doctor(
+        {
+            "local_staging_dir": "<local_staging_dir>",
+            "profiling_launch_base": "<profiling_launch_base>",
+        },
+        registry,
+        PRODUCTION_VERSION,
+    )
+    assert [r for r in unfilled if r.check_id == "profiling_launch_base_is_local"][
+        0
+    ].severity is Severity.SKIP
+
+    outside = tmp_path / "profiling-launch"
+    outside.mkdir()
+    healthy = run_doctor(
+        {"local_staging_dir": str(staging), "profiling_launch_base": str(outside)},
+        registry,
+        PRODUCTION_VERSION,
+    )
+    assert [r for r in healthy if r.check_id == "profiling_launch_base_is_local"][
+        0
+    ].severity is Severity.OK
