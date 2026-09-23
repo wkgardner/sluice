@@ -189,6 +189,38 @@ nvd_labkey_blast_fasta_list = "<nvd_labkey_blast_fasta_list>"
 # LabKey list receiving the expanded metagenomic BLAST hits.
 nvd_labkey_blast_meta_hits_list = "<nvd_labkey_blast_meta_hits_list>"
 
+[profiling]
+
+# The silly-fast-bfx pipeline checkout. Its pyproject.toml's dev environment
+# pins the Nextflow (>=26.04.6) the pipeline requires.
+profiling_repo_dir = "<profiling_repo_dir>"
+
+# The operator's silly-fast-bfx params YAML: the deacon and sylph reference
+# specs, skip_skope: true. Must NOT set input, results or work_dir — sluice
+# passes those per run. Keep it in ~/.sluice/profiling/.
+profiling_params_file = "<profiling_params_file>"
+
+# The Nextflow site config (CHTC / nf-ospool executor, container). No tower
+# block or other secrets. Keep it in ~/.sluice/profiling/.
+profiling_site_config = "<profiling_site_config>"
+
+# Base directory for per-experiment profiling results and work trees. Must be
+# on the shared staging tree so compute nodes can reach it.
+profiling_results_base = "<profiling_results_base>"
+
+# Where the profiling Nextflow run launches from. MUST be local disk, never the
+# shared staging tree — --resume depends on it and HTCondor cannot submit from
+# staging (errata D2).
+profiling_launch_base = "~/.sluice/profiling-launch"
+
+# Per-experiment profiling pipeline logs, appended across retries.
+profiling_log_dir = "~/.sluice/logs/profiling"
+
+# Nextflow profile from the site config to run under (e.g. chtc_htc). Leave
+# empty for none.
+# Optional — leave empty to switch it off.
+profiling_profile = "<profiling_profile>"
+
 [slack]
 
 # Whether to post run notifications to Slack.
