@@ -11,7 +11,8 @@ loudly at the pipeline's own validation step).
 expressible; before NVD costs little because profiling is fast. ``nvd`` does NOT list this gate in
 ``needs`` — they share an input, not an output — but because this gate has the lower order, a
 profiling failure quarantines the run and NVD waits. That is the chosen behaviour: the operator
-either fixes and ``clear_error``s, or ``exclude profiling`` lets that one run go to NVD.
+fixes the cause and ``clear_error``s. (Excluding ``profiling`` for one run would let it go to NVD,
+but ``control.exclude_gate`` is not on the CLI yet.)
 
 ## Launch shape — mirrors ``nvd.py``, deliberately copied rather than shared
 
