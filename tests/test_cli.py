@@ -583,6 +583,14 @@ def test_doctor_exits_zero_on_warnings_only(tmp_path, capsys, monkeypatch):
         nvd_labkey_blast_fasta_list="example_fasta_list",
         nvd_labkey_blast_meta_hits_list="example_meta_list",
         nvd_labkey_exp_id_guard_list="example_guard_list",
+        # The profiling gate's operator-owned files. Existing paths are enough
+        # for doctor: it checks they exist, never what is inside them.
+        profiling_repo_dir=str(repo),
+        profiling_params_file=str(secret),
+        profiling_site_config=str(secret),
+        profiling_results_base=str(tmp_path),
+        profiling_launch_base=str(launch_base),
+        profiling_log_dir=str(tmp_path),
         slack_enabled=False,
     )
 

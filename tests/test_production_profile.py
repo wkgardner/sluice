@@ -1,4 +1,10 @@
-"""The shipped ``production-v3.1`` profile — the registry entry live runs are stamped with.
+"""The shipped production profiles — the registry entries live runs are stamped with.
+
+Two versions ship side by side: ``production-v3.1`` (the original five gates, frozen) and
+``production-v3.2`` (v3.1 plus the ``profiling`` gate at order 4). A run's ``pipeline_version`` is
+stamped once at detection, so v3.1 must stay resolvable and unchanged for every run already stamped
+with it — adding a gate to v3.1 in place would hand every historical run, completed ones included,
+a new unsatisfied gate.
 
 Detection stamps ``runs.pipeline_version`` from ``metadata.pipeline_profile``, and the daemon
 resolves that string against its assembled registry on every look. A value with no registry entry
@@ -25,6 +31,7 @@ from sluice.core.profile import (
 )
 
 PRODUCTION_VERSION = "production-v3.1"
+CURRENT_VERSION = "production-v3.2"
 
 
 def test_production_profile_resolves_from_the_shipped_registry():
@@ -143,4 +150,54 @@ def test_an_unknown_production_version_still_raises():
     from sluice.gates.profiles import PRODUCTION_PROFILES
 
     with pytest.raises(UnknownProfileError):
-        load_profile("production-v3.2", PRODUCTION_PROFILES)
+        load_profile("production-v9.9", PRODUCTION_PROFILES)
+
+
+def test_v3_1_is_frozen_without_the_profiling_gate():
+    """``production-v3.1`` keeps exactly its original five gates, in order.
+
+    Runs are stamped once; changing this contract would reach back into every run already
+    stamped v3.1 — and completed runs stay daemon-eligible (F4), so they would re-run the new
+    gate.
+    """
+    from sluice.gates.profiles import PRODUCTION_PROFILES
+
+    profile = load_profile(PRODUCTION_VERSION, PRODUCTION_PROFILES)
+
+    assert [gate.id for gate in profile.gates] == [
+        "experiment",
+        "download",
+        "checksum",
+        "samplesheet",
+        "nvd",
+    ]
+
+
+def test_v3_2_runs_profiling_after_samplesheet_and_before_nvd():
+    """``production-v3.2`` is v3.1 plus ``profiling`` (order 4), REQUIRED, before ``nvd``."""
+    from sluice.gates.profiles import PRODUCTION_PROFILES
+
+    profile = load_profile(CURRENT_VERSION, PRODUCTION_PROFILES)
+    contract_ids = [gate.id for gate in required_gates(profile)]
+
+    assert contract_ids == [
+        "experiment",
+        "download",
+        "checksum",
+        "samplesheet",
+        "profiling",
+        "nvd",
+    ]
+    assert profile.applicability["profiling"] is Applicability.REQUIRED
+
+
+def test_the_default_for_fresh_databases_is_the_newest_profile():
+    """``PRODUCTION_VERSION`` (what a fresh DB is seeded with) is v3.2.
+
+    An existing DB keeps its stored default until an operator runs
+    ``sluice set-default-profile`` — ``prepare_database`` never overwrites it.
+    """
+    from sluice.gates.profiles import PRODUCTION_PROFILE, PRODUCTION_VERSION as SHIPPED
+
+    assert SHIPPED == CURRENT_VERSION
+    assert PRODUCTION_PROFILE.pipeline_version == CURRENT_VERSION

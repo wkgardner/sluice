@@ -38,6 +38,7 @@ _GATE_MODULES = {
     "checksum": ("sluice/gates/checksum.py",),
     "samplesheet": ("sluice/gates/samplesheet.py", "sluice/gates/nvd_tool.py"),
     "nvd": ("sluice/gates/nvd.py",),
+    "profiling": ("sluice/gates/profiling.py",),
 }
 
 
