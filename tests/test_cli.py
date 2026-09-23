@@ -328,9 +328,7 @@ def test_pause_and_resume_toggle_the_global_flag(deployment, capsys):
     assert "PAUSED" not in resumed_output
 
 
-def test_set_default_profile_changes_what_new_runs_are_stamped_with(
-    deployment, capsys
-):
+def test_set_default_profile_changes_what_new_runs_are_stamped_with(deployment, capsys):
     """``set-default-profile`` switches the active default, visible on ``status``.
 
     The rollout op for a new gate: shipped profiles are frozen, so a gate joins a
