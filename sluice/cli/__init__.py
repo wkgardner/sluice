@@ -85,7 +85,7 @@ from sluice.core.daemon import (
     read_last_look,
     run_forever,
 )
-from sluice.core.profile import REFERENCE_PROFILES
+from sluice.core.profile import REFERENCE_PROFILES, UnknownProfileError
 from sluice.doctor import Severity, run_doctor, worst
 from sluice.gates.detection import list_remote_runs
 from sluice.gates.profiles import PRODUCTION_PROFILES, PRODUCTION_VERSION
@@ -219,6 +219,11 @@ def _guard():
         # active run that must be held first. Report it and exit non-zero, so a
         # wrapper script cannot mistake a refusal for success.
         _err.print(f"[red]sluice: refused[/red] — {refusal}")
+        raise typer.Exit(EXIT_REFUSED) from None
+    except UnknownProfileError as unknown_profile:
+        # Before the KeyError clause: UnknownProfileError subclasses KeyError,
+        # and "config is missing required key" would be the wrong story.
+        _err.print(f"[red]sluice:[/red] {unknown_profile}")
         raise typer.Exit(EXIT_REFUSED) from None
     except KeyError as missing_key:
         _err.print(f"[red]sluice:[/red] config is missing required key {missing_key}")
@@ -688,6 +693,28 @@ def pause(context: typer.Context, reason: str = _REASON_OPTION) -> None:
 def resume(context: typer.Context, reason: str = _REASON_OPTION) -> None:
     """Let the daemon advance runs again, clearing a global pause."""
     _call_op(_settings(context), control.resume, reason=reason)
+
+
+@app.command("set-default-profile", epilog=_STATE_ONLY_EPILOG)
+def set_default_profile(
+    context: typer.Context,
+    pipeline_version: str = typer.Argument(
+        ..., help="A registered profile version, e.g. production-v3.2."
+    ),
+) -> None:
+    """Choose which profile [bold]newly detected[/bold] runs are stamped with.
+
+    The rollout step for a new gate: shipped profiles are frozen, so a gate joins
+    a new version, and this switches the default to it. Runs already detected
+    keep the version they were stamped with — nothing re-runs. An unknown
+    version is refused and never stored.
+    """
+    _call_op(
+        _settings(context),
+        control.set_default_profile,
+        pipeline_version,
+        registry=_registry(),
+    )
 
 
 @app.command()
