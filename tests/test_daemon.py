@@ -1994,3 +1994,15 @@ def test_announced_gates_post_a_started_milestone(prepared, monkeypatch):
     assert len(started) == 1
     assert started[0][1] == "announce_run"
     assert started[0][2] == f"{MOCK_ALPHA.name} started"
+
+
+def test_both_nextflow_gates_are_announced_at_start():
+    """``profiling`` and ``nvd`` both post "started" — each launches a Nextflow run.
+
+    Profiling is quicker than NVD, but on CHTC it still waits in the HTCondor
+    queue, and without the announcement the thread would jump from "samplesheet
+    completed" to "NVD started" with the profiling run invisible in between.
+    """
+    from sluice.core.daemon import GATES_ANNOUNCED_AT_START
+
+    assert set(GATES_ANNOUNCED_AT_START) == {"profiling", "nvd"}
