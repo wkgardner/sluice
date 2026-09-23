@@ -564,8 +564,9 @@ def _quarantine_without_gate(db_path, run_name, reason: str, notifier) -> str:
 # Gates announced in Slack BEFORE they run: the hours-long ones that would
 # otherwise leave the thread silent between the previous milestone and their
 # terminal outcome (production request 2026-09-22 — NVD launched with nothing
-# in the channel saying so).
-GATES_ANNOUNCED_AT_START = ("nvd",)
+# in the channel saying so). ``profiling`` too: it also launches a Nextflow run
+# that can sit in the HTCondor queue before NVD starts.
+GATES_ANNOUNCED_AT_START = ("profiling", "nvd")
 
 
 def process_run(config, run_name, *, registry, notifier=None, should_stop=None) -> str:
