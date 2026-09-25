@@ -1845,6 +1845,24 @@ actually protected.
      initially landed the method on the WRONG structural fake (both fakes end
      identically) — caught by the pin failing, a good pin doing its job.
    Takes effect on next daemon restart.
+3ap. ✅ **NOTIFICATION SWEEP — METRICS EVERYWHERE, PARENT TRACKS TERMINAL STATE, MENTIONS
+   TRIMMED** 2026-09-25 (user request: "kinda looks like AI garbage, I want more
+   metrics"). TDD; **801 passed** (suite grew +31 from Will's own profiling-gate work,
+   `b030c8e`/`a133262` — his edit to `GATES_ANNOUNCED_AT_START` silently defeated a
+   text-anchored patch mid-sweep; caught by 29 failures, good). Changes:
+   - Gate milestones: "<name> completed in <duration> · <scalar metrics>" — duration via
+     `format_duration`, plus every int/float in the gate's metadata (bools/strings
+     excluded: flags are not metrics, paths stay in the event log).
+   - Completion reply carries the flight numbers: `exp N · X.XX TB · <total> total`
+     (detection→completion wall clock).
+   - Terminal outcomes now `chat_update` the parent to `Status: ✅ completed` /
+     `🚨 quarantined` — the channel's one-line-per-run view stops lying "processing"
+     forever; metadata preserved via the shared `_rewrite_parent` (the
+     `_format_metadata` lesson).
+   - `slack_mentions` trimmed to the single on-call id (operator file, re-read per
+     message — effective immediately, no restart). `slack.py` now imports
+     `core.events.format_duration` (its first sluice import; gates→core arrow).
+   Rendering changes take effect on next daemon restart.
 4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
    is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
    remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`
