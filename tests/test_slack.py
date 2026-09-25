@@ -336,3 +336,51 @@ def test_update_run_header_without_a_thread_is_a_no_op(state_db):
     notifier_for(state_db, client).update_run_header("SEQ_001")
     assert client.updates == []
     assert client.posts == []
+
+
+def test_a_completed_run_reports_flight_metrics(state_db):
+    """The completion reply carries the numbers that matter, not a bare word.
+
+    Sweep 2026-09-25 ("I want more metrics"): experiment id, data size, and
+    total wall-clock from detection to completion — the three answers anyone
+    opening the thread is looking for.
+    """
+    client = FakeSlackClient()
+    with write_txn(state_db) as connection:
+        update_run(
+            connection,
+            "SEQ_001",
+            {
+                "slack_thread_ts": "1722600000.000100",
+                "detected_at": "2026-09-25T10:00:00+00:00",
+                "completed_at": "2026-09-25T12:30:00+00:00",
+            },
+        )
+
+    notifier_for(state_db, client).finish_run_thread("SEQ_001", "completed")
+
+    reply = client.posts[0]["text"]
+    assert "exp 4471" in reply
+    assert "2.50 TB" in reply
+    assert "2.5 h" in reply
+
+
+def test_terminal_outcomes_update_the_parent_status(state_db):
+    """Finishing a run rewrites the parent: "Status: processing" must not outlive the run.
+
+    The parent is the one line the channel shows per run; a completed run whose
+    parent still says processing misreports the fleet at a glance. Metadata is
+    preserved in the rewrite (the ``_format_metadata`` lesson).
+    """
+    client = FakeSlackClient()
+    with write_txn(state_db) as connection:
+        update_run(connection, "SEQ_001", {"slack_thread_ts": "1722600000.000100"})
+
+    notifier_for(state_db, client).finish_run_thread("SEQ_001", "quarantined", "boom")
+
+    assert len(client.updates) == 1
+    parent = client.updates[0]
+    assert parent["ts"] == "1722600000.000100"
+    assert "🚨 quarantined" in parent["text"]
+    assert "exp 4471" in parent["text"]
+    assert "processing" not in parent["text"]

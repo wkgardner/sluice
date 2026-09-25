@@ -43,7 +43,12 @@ from sluice.core.db import (
     update_run,
     write_txn,
 )
-from sluice.core.events import emit_gate_event, emit_run_event, safe_notify
+from sluice.core.events import (
+    emit_gate_event,
+    emit_run_event,
+    format_duration,
+    safe_notify,
+)
 from sluice.core.gate import GateOutcome, GateResult
 from sluice.core.profile import (
     UnknownProfileError,
@@ -569,6 +574,24 @@ def _quarantine_without_gate(db_path, run_name, reason: str, notifier) -> str:
 GATES_ANNOUNCED_AT_START = ("profiling", "nvd")
 
 
+def _milestone_metrics(metadata) -> str:
+    """A compact `` · key value`` suffix from a gate's scalar metadata.
+
+    Ints and floats only (bools excluded — flags are not metrics), so counts
+    and sizes reach Slack while paths and other strings stay in the event log
+    where they belong (sweep 2026-09-25: bare "<name> completed" carried none
+    of the numbers the gate had just computed).
+    """
+    if not metadata:
+        return ""
+    scalar_parts = [
+        f"{key.replace('_', ' ')} {value}"
+        for key, value in sorted(metadata.items())
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    return (" \u00b7 " + " \u00b7 ".join(scalar_parts)) if scalar_parts else ""
+
+
 def process_run(config, run_name, *, registry, notifier=None, should_stop=None) -> str:
     """Drive one run through its gates until it blocks, one gate per look.
 
@@ -719,7 +742,13 @@ def process_run(config, run_name, *, registry, notifier=None, should_stop=None) 
                 # The parent message said "exp pending" until now — rewrite it
                 # with the id everyone scans the channel for.
                 safe_notify(notifier, "update_run_header", run_name)
-            safe_notify(notifier, "post_milestone", run_name, f"{gate.name} completed")
+            safe_notify(
+                notifier,
+                "post_milestone",
+                run_name,
+                f"{gate.name} completed in {format_duration(duration_ms)}"
+                f"{_milestone_metrics(result.metadata)}",
+            )
             continue  # drive the next gate
 
         if outcome is GateOutcome.HELD:

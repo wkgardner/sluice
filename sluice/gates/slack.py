@@ -40,9 +40,12 @@ business in it. The token is never logged, never returned, and never formatted i
 import os
 import pathlib
 import sqlite3
+from datetime import datetime
 from typing import Any
 
 import structlog
+
+from sluice.core.events import format_duration
 
 __all__ = [
     "TOKEN_ENV_VAR",
@@ -58,8 +61,21 @@ log = structlog.get_logger("sluice.gates.slack")
 # transcribed literal there would let an env-only install look unconfigured.
 TOKEN_ENV_VAR = "SLACK_BOT_TOKEN"
 
+
 # Terminal outcomes -> the icon leading the parent message. Keyed on the daemon's
 # own vocabulary (the `outcome` it passes to finish_run_thread).
+def _total_duration_text(row) -> str | None:
+    """Wall-clock from detection to completion, human-scaled, or None if unknowable."""
+    detected, completed = row["detected_at"], row["completed_at"]
+    if not detected or not completed:
+        return None
+    try:
+        elapsed = datetime.fromisoformat(completed) - datetime.fromisoformat(detected)
+    except (ValueError, TypeError):
+        return None
+    return format_duration(int(elapsed.total_seconds() * 1000))
+
+
 _OUTCOME_ICONS = {
     "completed": "✅",
     "quarantined": "🚨",
@@ -215,24 +231,30 @@ class SlackNotifier:
         """Rewrite the parent message from the run's current row (exp id, size).
 
         No thread yet (or no row) means nothing to rewrite — a silent no-op,
-        matching ``open_run_thread``'s idempotence. The text template mirrors
-        ``open_run_thread`` exactly so an update never drops metadata
-        (the ``_format_metadata`` lesson, PP ``_terminal_title``).
+        matching ``open_run_thread``'s idempotence.
         """
         row = self._run_row(run_name)
         if row is None or not row["slack_thread_ts"]:
             return
+        self._rewrite_parent(run_name, row, "processing")
+
+    def _rewrite_parent(self, run_name: str, row, status: str) -> None:
+        """``chat_update`` the parent to ``status``, preserving the metadata line.
+
+        The template mirrors ``open_run_thread`` exactly so a rewrite never
+        drops metadata (the ``_format_metadata`` lesson, PP ``_terminal_title``).
+        Same failure posture as ``_post``: a Slack failure never fails work.
+        """
         text = (
-            f"▶ *{run_name}*\n"
+            f"\u25b6 *{run_name}*\n"
             f"{_format_metadata(row['experiment_id'], row['size_tb'])}\n"
-            "Status: processing"
+            f"Status: {status}"
         )
         try:
             self._client.chat_update(
                 channel=self._channel, ts=row["slack_thread_ts"], text=text
             )
         except Exception as update_error:
-            # Same posture as _post: a Slack failure never fails work.
             log.error(
                 "slack.update_failed",
                 **{
@@ -267,6 +289,15 @@ class SlackNotifier:
         """
         icon = _OUTCOME_ICONS.get(outcome, "•")
         body = f"{icon} *{run_name}* — {outcome}"
+        row = self._run_row(run_name)
+        if row is not None and outcome == "completed":
+            # The numbers anyone opening a finished thread wants (sweep
+            # 2026-09-25): experiment, data size, total flight time.
+            metrics = _format_metadata(row["experiment_id"], row["size_tb"])
+            total_duration = _total_duration_text(row)
+            if total_duration:
+                metrics = f"{metrics} \u00b7 {total_duration} total"
+            body = f"{body}\n{metrics}"
         if reason:
             body = f"{body}\n{reason}"
         needs_a_human = outcome == "quarantined"
@@ -275,6 +306,10 @@ class SlackNotifier:
             if mentions:
                 body = f"{body}\n{mentions}"
         self._post(body, thread_ts=self._thread_ts(run_name))
+        # The parent is the channel's one line per run — a terminal outcome
+        # must not leave it saying "processing".
+        if row is not None and row["slack_thread_ts"]:
+            self._rewrite_parent(run_name, row, f"{icon} {outcome}")
 
     # -- the one place that talks to Slack --------------------------------
 
