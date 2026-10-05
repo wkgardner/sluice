@@ -1863,6 +1863,29 @@ actually protected.
      message — effective immediately, no restart). `slack.py` now imports
      `core.events.format_duration` (its first sluice import; gates→core arrow).
    Rendering changes take effect on next daemon restart.
+3aq. ✅ **POLLER-PARITY EXPERIMENT DESCRIPTIONS + DOWNLOAD START ANNOUNCED** 2026-10-05.
+   Two user bugs. (1) Sluice's experiment Description dropped the informative parts the
+   poller wrote ("Run NVD Version: X on wastewater samples from <date>, Folder name: …").
+   Restored byte-format parity (PP `labkey_client.py:84`): version read from the NVD
+   checkout's `pyproject.toml` (same value `nvd version` reports, no subprocess,
+   degrades to "unknown"; `config.get` deliberately — informative only, F3's trailing
+   token stays last and `find`'s endswith guard is untouched). Verified live:
+   "Run NVD Version: 3.5.0 … 05Oct26 …". The two doctor guards disagreed about the new
+   read — drift said "cover it", selection said "a profile without nvd must not demand
+   nvd config" — resolved with an explicit `OPTIONAL_DECORATIVE_READS` allowlist in the
+   drift test (selection's principle wins; decorative reads never drive doctor).
+   (2) `download` added to `GATES_ANNOUNCED_AT_START` (Will's test updated with him) —
+   the poller always announced its 3-hour leg. Suite **803 passed**, lint clean.
+   - **The "thread doesn't update" complaint was stale code, not missing code:** the
+     exp-header update (Sep 22) and terminal parent rewrite (Sep 25) were committed but
+     the daemon that flew the week's runs predated them; Will's restart today picks up
+     everything. The remaining visible gap vs the poller thread is the per-sample
+     registration table — that is the DISABLED `registration` gate (C3 fail-closed
+     precondition), a real port, not a rendering tweak; decide separately.
+   - ⚠️ **OPERATIONS: staging at 156.1/161 TB (97%).** `20261002…` (exp 32700)
+     quarantined today — NVD exit 1 on a results **publish copy** failure, the classic
+     quota symptom. Free space, then `sluice clear-error 20261002_LH00642_0222_A2532JNLT4`
+     — NVD resumes from its work dir and mostly just re-publishes.
 4. **Sync macOS → CHTC.** ⚠️ **This item previously read "or stand up a shared git remote, which
    is the real fix" — the remote already exists** (`origin`, §4.3), so that half is done and the
    remaining work is smaller than this item used to imply. CHTC can `git clone`/`git pull`

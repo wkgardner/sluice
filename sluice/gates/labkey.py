@@ -22,7 +22,9 @@ No secret ever appears in a ``LabKeyError`` message: the api key is read from th
 to ``find``/``create`` or formatted into any message.
 """
 
+import tomllib
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -129,12 +131,18 @@ class ExperimentClient:
     """
 
     def __init__(
-        self, *, api_factory: Callable[[], Any], schema: str, query: str
+        self,
+        *,
+        api_factory: Callable[[], Any],
+        schema: str,
+        query: str,
+        nvd_version: str = "unknown",
     ) -> None:
-        """Capture the api factory and the schema/query; touch nothing external."""
+        """Capture the api factory, schema/query, and the NVD version for descriptions."""
         self._api_factory = api_factory
         self._schema = schema
         self._query = query
+        self._nvd_version = nvd_version
 
     def find_experiment_by_run_name(self, run_name: str) -> int | None:
         """Return the experiment number whose ``Description`` ends with the token, or ``None``.
@@ -224,7 +232,7 @@ class ExperimentClient:
             LabKeyError: if the insert fails, or the id is unresolvable after a
                 successful insert.
         """
-        description = _build_description(run_name)
+        description = _build_description(run_name, self._nvd_version)
         api = self._api_factory()
         try:
             api.insert_rows(
@@ -249,16 +257,38 @@ class ExperimentClient:
         return experiment_number
 
 
-def _build_description(run_name: str) -> str:
-    """A fixed ``Description`` ending with the trailing folder-name token (F3).
+def _build_description(run_name: str, nvd_version: str) -> str:
+    """The poller-parity ``Description``, ending with the folder-name token (F3).
 
-    The token is the LAST segment — nothing follows it — so ``find``'s
-    ``endswith`` guard is exact and substring-safe.
+    Byte-format parity with PP ``format_experiment_description``
+    (``labkey_client.py:84``): tool version and creation date are the parts
+    humans read off the experiment list, and the original sluice port dropped
+    them (user bug 2026-10-05). The token stays the LAST segment — nothing
+    follows it — so ``find``'s ``endswith`` guard is exact and substring-safe.
     """
+    date_text = datetime.today().strftime("%d%b%y")
     return (
-        "Automated sequencing experiment created by sluice. "
-        f"{_FOLDER_NAME_PREFIX}{run_name}"
+        f"Run NVD Version: {nvd_version} on wastewater samples from "
+        f"{date_text}, {_FOLDER_NAME_PREFIX}{run_name}"
     )
+
+
+def _nvd_version_from_pyproject(nvd_repo_dir) -> str:
+    """The NVD checkout's version, or ``"unknown"`` — never an exception.
+
+    Read from ``pyproject.toml`` rather than running ``nvd version``: the same
+    value (the NVD repo pins them equal in its own tests), without giving this
+    adapter a subprocess. A missing or unparsable file degrades to
+    ``"unknown"`` — the description is informative, never load-bearing beyond
+    its trailing token.
+    """
+    try:
+        pyproject = tomllib.loads(
+            (Path(nvd_repo_dir) / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        return str(pyproject["project"]["version"])
+    except Exception:  # noqa: BLE001 — any failure means "unknown", by design
+        return "unknown"
 
 
 def make_experiment_client(
@@ -288,4 +318,13 @@ def make_experiment_client(
     if api_factory is None:
         api_factory = _default_api_factory(server, project, api_key_file)
 
-    return ExperimentClient(api_factory=api_factory, schema=schema, query=query)
+    return ExperimentClient(
+        api_factory=api_factory,
+        schema=schema,
+        query=query,
+        # .get, not subscript, deliberately: the version is informative only
+        # (the description's load-bearing part is its trailing token), so a
+        # config without the nvd block degrades to "unknown" rather than
+        # making the experiment client depend on nvd deployment keys.
+        nvd_version=_nvd_version_from_pyproject(config.get("nvd_repo_dir") or ""),
+    )
