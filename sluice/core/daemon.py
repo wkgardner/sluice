@@ -571,7 +571,7 @@ def _quarantine_without_gate(db_path, run_name, reason: str, notifier) -> str:
 # terminal outcome (production request 2026-09-22 — NVD launched with nothing
 # in the channel saying so). ``profiling`` too: it also launches a Nextflow run
 # that can sit in the HTCondor queue before NVD starts.
-GATES_ANNOUNCED_AT_START = ("profiling", "nvd")
+GATES_ANNOUNCED_AT_START = ("download", "profiling", "nvd")
 
 
 def _milestone_metrics(metadata) -> str:

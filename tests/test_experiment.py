@@ -446,3 +446,43 @@ def test_gate_run_create_path_delegates_to_client(tmp_path, monkeypatch):
     result = EXPERIMENT.run(context)
     assert result.outcome is GateOutcome.SUCCESS
     assert result.metadata == {"experiment_id": 7777}
+
+
+def test_description_is_poller_parity_and_ends_with_the_folder_token():
+    """The description carries NVD version + date, poller-style, token last.
+
+    User bug 2026-10-05: sluice wrote "Automated sequencing experiment created
+    by sluice…" where the poller wrote "Run NVD Version: 3.5.0 on wastewater
+    samples from 21Sep26, Folder name: …" — the informative parts (tool
+    version, creation date) were dropped in the port. Poller parity restored;
+    the F3 invariant holds: the folder-name token stays the LAST segment so
+    ``find_experiment_by_run_name``'s exact-suffix guard is unaffected.
+    """
+    from datetime import datetime
+
+    from sluice.gates.labkey import _build_description
+
+    description = _build_description("RUN_X", "9.9.9")
+
+    expected_date = datetime.today().strftime("%d%b%y")
+    assert description == (
+        f"Run NVD Version: 9.9.9 on wastewater samples from {expected_date}, "
+        "Folder name: RUN_X"
+    )
+    assert description.endswith("Folder name: RUN_X")
+
+
+def test_nvd_version_is_read_from_the_repo_pyproject(tmp_path):
+    """The version in the description comes from the NVD checkout's pyproject.
+
+    Same source ``nvd version`` reports (the NVD repo pins them equal), read as
+    a file so the adapter stays subprocess-free. Any failure degrades to
+    "unknown" — a missing version must never block experiment creation.
+    """
+    from sluice.gates.labkey import _nvd_version_from_pyproject
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "nvd"\nversion = "9.9.9"\n', encoding="utf-8"
+    )
+    assert _nvd_version_from_pyproject(tmp_path) == "9.9.9"
+    assert _nvd_version_from_pyproject(tmp_path / "absent") == "unknown"

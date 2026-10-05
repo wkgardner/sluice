@@ -2000,16 +2000,17 @@ def test_announced_gates_post_a_started_milestone(prepared, monkeypatch):
     assert started[0][2] == f"{MOCK_ALPHA.name} started"
 
 
-def test_both_nextflow_gates_are_announced_at_start():
-    """``profiling`` and ``nvd`` both post "started" — each launches a Nextflow run.
+def test_the_long_gates_are_announced_at_start():
+    """``download``, ``profiling`` and ``nvd`` post "started" — the hours-long legs.
 
-    Profiling is quicker than NVD, but on CHTC it still waits in the HTCondor
-    queue, and without the announcement the thread would jump from "samplesheet
-    completed" to "NVD started" with the profiling run invisible in between.
+    Profiling and nvd each launch a Nextflow run (HTCondor queue wait included);
+    download is a multi-hour rsync the poller's threads always announced.
+    Without the announcements the thread goes silent exactly when the most is
+    happening (notification sweep round 2, 2026-10-05).
     """
     from sluice.core.daemon import GATES_ANNOUNCED_AT_START
 
-    assert set(GATES_ANNOUNCED_AT_START) == {"profiling", "nvd"}
+    assert set(GATES_ANNOUNCED_AT_START) == {"download", "profiling", "nvd"}
 
 
 def test_completed_milestones_carry_duration_and_scalar_metrics(prepared):
