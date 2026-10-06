@@ -328,6 +328,43 @@ def test_pause_and_resume_toggle_the_global_flag(deployment, capsys):
     assert "PAUSED" not in resumed_output
 
 
+def test_set_default_profile_changes_what_new_runs_are_stamped_with(deployment, capsys):
+    """``set-default-profile`` switches the active default, visible on ``status``.
+
+    The rollout op for a new gate: shipped profiles are frozen, so a gate joins a
+    new version, and this is how the live DB starts stamping it on NEW runs.
+    Existing runs keep their stamped version (stamp-once).
+    """
+    config = ["--config", str(deployment.config_path)]
+
+    # No runs exist, so the only place a version can appear is the default.
+    assert main([*config, "set-default-profile", "production-v3.1"]) == 0
+    capsys.readouterr()
+    main([*config, "status"])
+    output = capsys.readouterr().out
+    assert "production-v3.1" in output and "production-v3.2" not in output
+
+    assert main([*config, "set-default-profile", "production-v3.2"]) == 0
+    capsys.readouterr()
+    main([*config, "status"])
+    output = capsys.readouterr().out
+    assert "production-v3.2" in output and "production-v3.1" not in output
+
+
+def test_set_default_profile_refuses_an_unknown_version(deployment, capsys):
+    """A typo'd version is refused with one clear line, never stored.
+
+    An unresolvable default would quarantine every newly detected run, so it
+    must never become the default.
+    """
+    config = ["--config", str(deployment.config_path)]
+
+    exit_code = main([*config, "set-default-profile", "production-v9.9"])
+
+    assert exit_code == 1
+    assert "production-v9.9" in capsys.readouterr().err
+
+
 def test_status_says_so_when_no_daemon_is_running(deployment, capsys):
     """A dead daemon is reported as dead, and the fix is on the same line.
 
@@ -583,6 +620,14 @@ def test_doctor_exits_zero_on_warnings_only(tmp_path, capsys, monkeypatch):
         nvd_labkey_blast_fasta_list="example_fasta_list",
         nvd_labkey_blast_meta_hits_list="example_meta_list",
         nvd_labkey_exp_id_guard_list="example_guard_list",
+        # The profiling gate's operator-owned files. Existing paths are enough
+        # for doctor: it checks they exist, never what is inside them.
+        profiling_repo_dir=str(repo),
+        profiling_params_file=str(secret),
+        profiling_site_config=str(secret),
+        profiling_results_base=str(tmp_path),
+        profiling_launch_base=str(launch_base),
+        profiling_log_dir=str(tmp_path),
         slack_enabled=False,
     )
 

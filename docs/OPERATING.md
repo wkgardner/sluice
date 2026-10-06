@@ -365,6 +365,10 @@ files, and the shortfall.
 | `experiment gate: LabKey ...` | LabKey was unreachable or refused. | Check LabKey is up and the credentials are valid. |
 | `samplesheet gate: ...` | NVD's samplesheet tool failed. | The tool's own error follows the colon. Often a missing lane file or a bad `nvd_repo_dir`. |
 | `nvd gate: ... exited N` | The NVD pipeline itself failed. | The message names the log file. Read it, fix the cause, then clear the error — the run resumes from Nextflow's last checkpoint. |
+| `profiling gate: ... exited N` | The silly-fast-bfx pipeline itself failed. | The message names the log (`profiling_log_dir/<experiment id>.log`). Read it, fix the cause, then clear the error — the run resumes from Nextflow's last checkpoint. **NVD waits until profiling passes.** |
+| `profiling gate: ... N failed task(s)` | Nextflow exited 0 but some tasks failed (the site config is ignoring task errors). | The message names the `execution_trace.txt`; its `FAILED` rows say which tasks. Fix and clear the error. |
+| `profiling gate: ... wrote no .../execution_trace.txt` | Nextflow exited 0 without producing a trace, so there is no evidence the work happened. | Read the log it names. Usually the pipeline stopped before starting any task (bad params file, schema validation). |
+| `profiling_launch_base ... is inside local_staging_dir` | A configuration mistake, not a run problem. | Same rule as NVD's launch directory: local disk only. Fix the config and clear the error. |
 | `nvd_launch_base ... is inside local_staging_dir` | A configuration mistake, not a run problem. | The NVD launch directory must be on local disk, not the shared staging tree, or resuming silently does nothing. Fix the config and clear the error. |
 
 **3. Let it try again.**
@@ -450,9 +454,13 @@ Most things can wait. These probably cannot:
 
 ## Current pipeline scope
 
-As of 2026-08-02 the pipeline runs: **experiment → download → checksum → samplesheet → nvd**.
+Runs detected under **`production-v3.2`** go: **experiment → download → checksum → samplesheet →
+profiling → nvd**. Runs detected earlier stay on **`production-v3.1`** (the same chain without
+`profiling`) for good — a run keeps the profile it was stamped with, so nothing old re-runs. Which
+profile new runs get is switched with `sluice set-default-profile <version>`; `sluice status` shows
+the current one.
 
-A run that passes all five is reported `complete`, and that is truthful — it is complete *under the
+A run that passes every gate of its profile is reported `complete`, and that is truthful — it is complete *under the
 contract that exists today*. The Globus backup pair is deferred until Will returns; when it lands, runs simply continue further
 before completing. Nothing behind it changes, and nothing already done is redone.
 
@@ -465,6 +473,12 @@ There is currently **no operator command to exclude a gate from a run.** The cap
 inside sluice and is audited, but it is not wired to the command line yet, so a pipeline stage
 cannot be skipped for a single run today. `sluice show <run>` will display exclusions if any exist.
 If you need one, that is a "get hold of Will" situation.
+
+**Profiling (silly-fast-bfx) runs before NVD** — a quick Deacon + Sylph screen of the raw reads,
+published under `profiling_results_base/<experiment id>/profiling-results/`. It is quick compared
+with NVD, but on CHTC it still waits in the HTCondor queue. **If it fails, the run is quarantined
+and NVD does not start** until the cause is fixed and the error cleared. Its log is
+`profiling_log_dir/<experiment id>.log`, appended across retries like NVD's.
 
 **NVD runs take hours.** A run sitting on the `nvd` gate is normal, not stuck. To tell working from
 hung, look at the NVD log — its path is in the run's quarantine reason if it failed, and otherwise

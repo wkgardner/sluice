@@ -490,6 +490,67 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
         "LabKey list receiving the expanded metagenomic BLAST hits.",
         probe=ProbeKind.ENDPOINT,
     ),
+    # -- Profiling (silly-fast-bfx, before NVD) ------------------------------
+    ConfigField(
+        "profiling_repo_dir",
+        FieldKind.EXTERNAL_PATH,
+        "profiling",
+        "The silly-fast-bfx pipeline checkout. Its pyproject.toml's dev "
+        "environment pins the Nextflow (>=26.04.6) the pipeline requires.",
+        probe=ProbeKind.PATH_EXISTS,
+    ),
+    ConfigField(
+        "profiling_params_file",
+        FieldKind.EXTERNAL_PATH,
+        "profiling",
+        "The operator's silly-fast-bfx params YAML: the deacon and sylph "
+        "reference specs, skip_skope: true. Must NOT set input, results or "
+        "work_dir — sluice passes those per run. Keep it in ~/.sluice/profiling/.",
+        probe=ProbeKind.PATH_EXISTS,
+    ),
+    ConfigField(
+        "profiling_site_config",
+        FieldKind.EXTERNAL_PATH,
+        "profiling",
+        "The Nextflow site config (CHTC / nf-ospool executor, container). No "
+        "tower block or other secrets. Keep it in ~/.sluice/profiling/.",
+        probe=ProbeKind.PATH_EXISTS,
+    ),
+    ConfigField(
+        "profiling_results_base",
+        FieldKind.EXTERNAL_PATH,
+        "profiling",
+        "Base directory for per-experiment profiling results and work trees. "
+        "Must be on the shared staging tree so compute nodes can reach it.",
+        probe=ProbeKind.PATH_EXISTS,
+    ),
+    ConfigField(
+        "profiling_launch_base",
+        FieldKind.MANAGED_PATH,
+        "profiling",
+        "Where the profiling Nextflow run launches from. MUST be local disk, "
+        "never the shared staging tree — --resume depends on it and HTCondor "
+        "cannot submit from staging (errata D2).",
+        probe=ProbeKind.PATH_EXISTS,
+        home_relative="profiling-launch",
+    ),
+    ConfigField(
+        "profiling_log_dir",
+        FieldKind.MANAGED_PATH,
+        "profiling",
+        "Per-experiment profiling pipeline logs, appended across retries.",
+        probe=ProbeKind.PATH_EXISTS,
+        home_relative="logs/profiling",
+    ),
+    ConfigField(
+        "profiling_profile",
+        FieldKind.VALUE,
+        "profiling",
+        "Nextflow profile from the site config to run under (e.g. chtc_htc). "
+        "Leave empty for none.",
+        probe=ProbeKind.NONE,
+        required=False,
+    ),
     # -- Slack --------------------------------------------------------------
     ConfigField(
         "slack_enabled",

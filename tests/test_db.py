@@ -1126,7 +1126,9 @@ def test_all_migrations_yield_the_top_version_and_every_object(tmp_path):
 #
 # Shipped so far: ``labkey_registered`` (007, experiment gate), ``downloaded``
 # (008, download gate), ``checksummed`` (009, checksum gate),
-# ``samplesheet_created`` (010, samplesheet gate), ``nvd_completed`` (011, nvd gate).
+# ``samplesheet_created`` (010, samplesheet gate), ``nvd_completed`` (011, nvd gate),
+# ``profiling_completed`` (012, profiling gate — a sluice-only gate with no
+# production-poller counterpart, so it was never on this list).
 UNSHIPPED_PRODUCTION_SATISFACTION_COLUMNS = {
     "authority_registered",
     "globus_submitted",
@@ -1162,6 +1164,25 @@ def test_migration_007_adds_labkey_registered_column(tmp_path):
         "a production satisfaction column landed ahead of its gate; each ships "
         f"with its own migration (⚑3). Leaked: {sorted(leaked)}"
     )
+
+
+def test_migration_012_adds_profiling_completed_column(tmp_path):
+    """Migration 012 adds the ``profiling`` gate's column as ``INTEGER NOT NULL DEFAULT 0``.
+
+    Same shape as every satisfaction column: ``NOT NULL DEFAULT 0`` keeps
+    reconcile out of three-valued logic, and pre-existing rows land unsatisfied,
+    which is correct because they never ran the gate.
+    """
+    with initialized_connection(tmp_path / "state.db") as connection:
+        info = {
+            row["name"]: row for row in connection.execute("PRAGMA table_info(runs)")
+        }
+
+    assert "profiling_completed" in info, "migration 012 did not add the column"
+    column = info["profiling_completed"]
+    assert column["type"] == "INTEGER"
+    assert column["notnull"] == 1
+    assert column["dflt_value"] == "0"
 
 
 # --------------------------------------------------------------------------
@@ -2187,12 +2208,12 @@ def test_migration_008_adds_downloaded_not_null_default_zero(tmp_path):
     assert column["dflt_value"] == "0"
 
 
-def test_migration_ladder_head_is_011(tmp_path):
-    """The ladder reaches 011 and records it.
+def test_migration_ladder_head_is_012(tmp_path):
+    """The ladder reaches 012 and records it.
 
-    Pins that the download gate's migration is actually wired into MIGRATIONS
-    rather than merely defined — a gate whose column never lands would raise
-    KeyError in reconcile on every look.
+    Pins that the newest gate's migration (012, ``profiling``) is actually wired
+    into MIGRATIONS rather than merely defined — a gate whose column never lands
+    would raise KeyError in reconcile on every look.
     """
     with initialized_connection(tmp_path / "state.db") as connection:
-        assert sluice.core.db.schema_version(connection) == 11
+        assert sluice.core.db.schema_version(connection) == 12

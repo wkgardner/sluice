@@ -340,6 +340,21 @@ def _migration_011_nvd_completed(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_012_profiling_completed(conn: sqlite3.Connection) -> None:
+    """Add the ``profiling`` gate's satisfaction column to ``runs``.
+
+    ONE column per the incremental-migration policy (⚑3). The ``profiling`` gate
+    (silly-fast-bfx, order 4) is sluice-only — production has no counterpart
+    column, so there is no rename to record. ``INTEGER NOT NULL DEFAULT 0``, as
+    with 007-011: pre-existing rows land unsatisfied, which is correct because
+    they never ran the gate. (Whether an old row is *asked* to run it is decided
+    by its stamped profile, not by this column — see ``sluice/gates/profiles.py``.)
+    """
+    conn.execute(
+        "ALTER TABLE runs ADD COLUMN profiling_completed INTEGER NOT NULL DEFAULT 0",
+    )
+
+
 # (version, name, apply_fn) each. The framework (unit 4) runs each apply_fn in its
 # own BEGIN IMMEDIATE/COMMIT and records the version only on success, so the
 # apply_fns issue plain DDL and touch neither the transaction nor the ledger.
@@ -357,6 +372,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     (9, "009_checksummed", _migration_009_checksummed),
     (10, "010_samplesheet_created", _migration_010_samplesheet_created),
     (11, "011_nvd_completed", _migration_011_nvd_completed),
+    (12, "012_profiling_completed", _migration_012_profiling_completed),
 )
 
 

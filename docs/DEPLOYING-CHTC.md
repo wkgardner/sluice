@@ -116,6 +116,29 @@ in the file. These are the ones only you can answer:
 | **nvd** | `nvd_repo_dir`, `nvd_results_base` |
 | **nvd reference data** | `nvd_blast_db`, `nvd_blast_db_prefix`, `nvd_blast_db_version`, `nvd_taxonomy_dir`, `nvd_virus_index`, `nvd_virus_index_version` |
 | **nvd labkey upload** | `nvd_labkey_server`, `nvd_labkey_project_name`, `nvd_labkey_blast_fasta_list`, `nvd_labkey_blast_meta_hits_list`, `nvd_labkey_exp_id_guard_list` |
+| **profiling** | `profiling_repo_dir`, `profiling_params_file`, `profiling_site_config`, `profiling_results_base` (and `profiling_profile`, e.g. `chtc_htc`) |
+
+The **profiling** gate runs silly-fast-bfx before NVD. Its two operator files live in
+`~/.sluice/profiling/`, outside any git repo:
+
+- **`params.yaml`** — the `deacon:` and `sylph:` reference specs plus `skip_skope: true`. Do
+  **not** set `input`, `results` or `work_dir`; sluice passes those per run. Every Sylph
+  `read_sets` needs both keys (`input: true`, `deacon_filtered: [...]`), and must not name a
+  Deacon reference id that is commented out — that silently produces no Sylph work.
+- **`site.config`** — the CHTC / nf-ospool executor profile. Start from silly-fast-bfx's
+  example, then: **delete any `tower {}` block** (it holds an access token); point
+  `container_image` at a `.sif` on **/staging** (or a `docker://` URL), never /home — compute
+  nodes cannot see /home; prefer `errorStrategy 'retry'` with `maxRetries 2` over `'ignore'`
+  (OSPool preempts jobs, and sluice treats any `FAILED` task as a run failure anyway); keep the
+  `requirements = … (Target.HasCHTCStaging == true)` expression and `transfer_output_files = ""`.
+  Run the `nf-ospool-test` smoke test against it before the first real run.
+
+silly-fast-bfx needs Nextflow ≥ 26.04.6, which sluice runs from the pipeline's own pixi `dev`
+environment — so pixi on the host must satisfy that repo's `requires-pixi`.
+
+**Switching live runs onto profiling** is a separate, deliberate step: deploy, fill in and
+`sluice doctor` the profiling keys, then `sluice set-default-profile production-v3.2`. Only runs
+detected after that get the new gate.
 
 Two of these are worth extra care on CHTC:
 

@@ -38,6 +38,7 @@ _GATE_MODULES = {
     "checksum": ("sluice/gates/checksum.py",),
     "samplesheet": ("sluice/gates/samplesheet.py", "sluice/gates/nvd_tool.py"),
     "nvd": ("sluice/gates/nvd.py",),
+    "profiling": ("sluice/gates/profiling.py",),
 }
 
 
@@ -47,6 +48,18 @@ def _probe_by_key():
 
 def _group_by_key():
     return {field.name: field.group for field in CONFIG_FIELDS}
+
+
+# Reads a gate makes for DECORATION, not operation: the value is informative
+# (degrades to a placeholder on absence) and must not make doctor demand its
+# group for profiles that do not contain the owning gate. Each entry names
+# why. Keep this list short — a read that can fail a gate belongs in
+# GATE_CONFIG_GROUPS, not here.
+OPTIONAL_DECORATIVE_READS = {
+    # The experiment description quotes the NVD version (poller parity,
+    # 2026-10-05); _nvd_version_from_pyproject degrades to "unknown".
+    ("experiment", "nvd_repo_dir"),
+}
 
 
 def _uncovered_probe_bearing_reads(sources_by_gate, groups_by_gate) -> list[str]:
@@ -71,6 +84,8 @@ def _uncovered_probe_bearing_reads(sources_by_gate, groups_by_gate) -> list[str]
         for source in sources:
             for key in sorted(_config_reads_in(ast.parse(source))):
                 if probe.get(key, ProbeKind.NONE) is ProbeKind.NONE:
+                    continue
+                if (gate_id, key) in OPTIONAL_DECORATIVE_READS:
                     continue
                 if group.get(key) not in covered_groups:
                     problems.append(

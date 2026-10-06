@@ -537,10 +537,14 @@ def test_success_persists_column_and_emits_gate_event(prepared):
     assert isinstance(line["gate.duration_ms"], int)
     assert line["gate.metadata"]["marker"] == str(marker)
 
-    assert (
-        notifier.calls.count(("post_milestone", "run1", f"{MOCK_ALPHA.name} completed"))
-        == 1
-    )
+    completed_milestones = [
+        call
+        for call in notifier.calls
+        if call[0] == "post_milestone"
+        and call[1] == "run1"
+        and call[2].startswith(f"{MOCK_ALPHA.name} completed in ")
+    ]
+    assert len(completed_milestones) == 1
 
 
 def test_drive_until_blocked_completes_a_run_in_one_call(prepared):
@@ -1994,3 +1998,52 @@ def test_announced_gates_post_a_started_milestone(prepared, monkeypatch):
     assert len(started) == 1
     assert started[0][1] == "announce_run"
     assert started[0][2] == f"{MOCK_ALPHA.name} started"
+
+
+def test_the_long_gates_are_announced_at_start():
+    """``download``, ``profiling`` and ``nvd`` post "started" — the hours-long legs.
+
+    Profiling and nvd each launch a Nextflow run (HTCondor queue wait included);
+    download is a multi-hour rsync the poller's threads always announced.
+    Without the announcements the thread goes silent exactly when the most is
+    happening (notification sweep round 2, 2026-10-05).
+    """
+    from sluice.core.daemon import GATES_ANNOUNCED_AT_START
+
+    assert set(GATES_ANNOUNCED_AT_START) == {"download", "profiling", "nvd"}
+
+
+def test_completed_milestones_carry_duration_and_scalar_metrics(prepared):
+    """A gate's completion milestone reads "<name> completed in <t> · <metrics>".
+
+    Sweep 2026-09-25: bare "<name> completed" lines carried none of the numbers
+    the gate just computed. Scalar metadata (ints/floats, bools excluded)
+    becomes a compact suffix; paths and other strings stay out of Slack.
+    """
+    metric_gate = Gate(
+        id="metric_gate",
+        name="Metric probe",
+        satisfied_column="mock_alpha_done",
+        order=1,
+        needs=(),
+        produces=(),
+        run=lambda context: GateResult(
+            GateOutcome.SUCCESS,
+            metadata={"downloaded_files": 641, "workdir": "/tmp/x", "ok": True},
+        ),
+        invalidate=lambda context: None,
+    )
+    version, registry = _single_gate_registry(metric_gate)
+    with write_txn(prepared["state_file"]) as connection:
+        insert_run(connection, "metric_run", pipeline_version=version)
+    notifier = RecordingNotifier()
+
+    process_run(prepared, "metric_run", registry=registry, notifier=notifier)
+
+    milestones = [c[2] for c in notifier.calls if c[0] == "post_milestone"]
+    assert len(milestones) == 1
+    text = milestones[0]
+    assert text.startswith("Metric probe completed in ")
+    assert "downloaded files 641" in text
+    assert "/tmp/x" not in text, "string metadata must stay out of Slack"
+    assert "ok" not in text, "bool metadata is not a metric"
