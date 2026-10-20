@@ -255,6 +255,66 @@ def test_clear_error_makes_a_quarantined_run_eligible_again(deployment, capsys):
     assert "transfer failed" not in capsys.readouterr().out
 
 
+def test_reset_gate_rewinds_a_held_run_so_the_gate_runs_again(deployment, capsys):
+    """``reset-gate`` clears one gate on a held run, so the daemon re-runs it.
+
+    The motivating case: an NVD run that Nextflow called OK while every task's
+    error was ignored. The gate looks done, so there is no quarantine to clear —
+    rewinding the gate is how it runs again.
+    """
+    add_run(
+        deployment.state_file,
+        "SEQ_020",
+        experiment_id=4471,
+        labkey_registered=1,
+        downloaded=1,
+        checksummed=1,
+        samplesheet_created=1,
+        nvd_completed=1,
+        completed_at="2026-10-19T09:35:22+00:00",
+    )
+    config = ["--config", str(deployment.config_path)]
+    main([*config, "hold", "SEQ_020"])
+    capsys.readouterr()
+
+    exit_code = main(
+        [*config, "reset-gate", "SEQ_020", "nvd", "--reason", "jq missing in image"]
+    )
+
+    assert exit_code == 0
+    capsys.readouterr()  # Drop reset-gate's own output before reading the JSON.
+    main([*config, "--json", "show", "SEQ_020"])
+    shown = json.loads(capsys.readouterr().out)
+    assert "nvd" in shown["gates"]["unsatisfied"]
+    assert "samplesheet" in shown["gates"]["satisfied"]
+
+
+def test_reset_gate_refuses_a_run_that_is_not_held(deployment, capsys):
+    """An active run is refused: a gate in flight would re-stamp the column at once."""
+    add_run(deployment.state_file, "SEQ_021", experiment_id=4471, labkey_registered=1)
+
+    exit_code = main(
+        ["--config", str(deployment.config_path), "reset-gate", "SEQ_021", "experiment"]
+    )
+
+    assert exit_code == 1
+    assert "hold" in capsys.readouterr().err
+
+
+def test_reset_gate_names_an_unknown_gate_plainly(deployment, capsys):
+    """A mistyped gate is reported as an unknown gate, not as a config problem."""
+    add_run(deployment.state_file, "SEQ_022", lifecycle="held")
+
+    exit_code = main(
+        ["--config", str(deployment.config_path), "reset-gate", "SEQ_022", "nvdd"]
+    )
+
+    error_output = capsys.readouterr().err
+    assert exit_code == 1
+    assert "nvdd" in error_output
+    assert "config is missing" not in error_output
+
+
 def test_every_state_change_reports_its_audit_id(deployment, capsys):
     """Each op prints the audit row id it wrote.
 

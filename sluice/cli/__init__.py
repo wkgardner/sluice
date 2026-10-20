@@ -220,6 +220,11 @@ def _guard():
         # wrapper script cannot mistake a refusal for success.
         _err.print(f"[red]sluice: refused[/red] — {refusal}")
         raise typer.Exit(EXIT_REFUSED) from None
+    except control.UnknownGateError as unknown_gate:
+        # Also before the KeyError clause, for the same reason: a mistyped gate
+        # id is not a missing config key.
+        _err.print(f"[red]sluice:[/red] {unknown_gate}")
+        raise typer.Exit(EXIT_REFUSED) from None
     except UnknownProfileError as unknown_profile:
         # Before the KeyError clause: UnknownProfileError subclasses KeyError,
         # and "config is missing required key" would be the wrong story.
@@ -677,6 +682,35 @@ def clear_error(
     A run that is also held needs [cyan]unhold[/cyan] too — the two are independent.
     """
     _call_op(_settings(context), control.clear_error, run, reason=reason)
+
+
+@app.command("reset-gate", epilog=_STATE_ONLY_EPILOG)
+def reset_gate(
+    context: typer.Context,
+    run: str = _RUN_ARGUMENT,
+    gate: str = typer.Argument(..., help="Gate id to rewind, e.g. nvd."),
+    reason: str = _REASON_OPTION,
+    force: bool = typer.Option(False, "--force", help="Rewind even a protected run."),
+) -> None:
+    """Mark one gate not-done so the daemon runs it again.
+
+    For a gate that [italic]finished[/italic] but should not have counted — e.g. an
+    NVD run Nextflow called OK while every task's error was ignored. A failed gate
+    quarantines instead; use [cyan]clear-error[/cyan] for that.
+
+    [bold]Hold the run first[/bold] (it is refused otherwise), fix the cause, then
+    [cyan]unhold[/cyan]. Only this gate is cleared and no file is deleted; the gate
+    resumes from what is already on disk.
+    """
+    _call_op(
+        _settings(context),
+        control.reset_gate,
+        run,
+        gate,
+        registry=_registry(),
+        reason=reason,
+        force=force,
+    )
 
 
 @app.command(epilog=_STATE_ONLY_EPILOG)

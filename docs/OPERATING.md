@@ -382,6 +382,24 @@ half-downloaded run continues where it stopped rather than transferring everythi
 
 The `--reason` is recorded in the audit trail. Write it for whoever reads it in three months.
 
+### A run "completed" but shouldn't have
+
+Sometimes a gate passes when it shouldn't have. For example, Nextflow exits 0 for an NVD run
+because the site config ignored every failed task. Nothing is quarantined, so `clear-error` has
+nothing to clear. Rewind the gate instead:
+
+```bash
+sluice hold <run> --reason "why"
+# fix the cause (e.g. the container image in ~/.nvd/user.config)
+sluice reset-gate <run> nvd --reason "why"
+sluice unhold <run>
+```
+
+`reset-gate` marks that one gate as not done, and the daemon runs it again. It refuses a run that
+isn't held, because a gate that's still running would mark itself done again straight away. It
+deletes nothing: NVD restarts in the same launch directory with `-resume`, so cached tasks are
+reused.
+
 ---
 
 ## Stopping things
