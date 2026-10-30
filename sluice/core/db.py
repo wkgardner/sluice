@@ -355,6 +355,21 @@ def _migration_012_profiling_completed(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_013_authority_registered(conn: sqlite3.Connection) -> None:
+    """Add the ``registration`` gate's satisfaction column to ``runs``.
+
+    ONE column per the incremental-migration policy (⚑3). The name is python-poller's
+    own (gate map §3), so it keeps its production meaning: this run's samples went
+    through authority-list registration. ``INTEGER NOT NULL DEFAULT 0``, as with
+    007-012: pre-existing rows land unsatisfied, which is correct because they never
+    ran the gate. (Whether an old row is *asked* to run it is decided by its stamped
+    profile — only ``production-v3.3`` and later list ``registration``.)
+    """
+    conn.execute(
+        "ALTER TABLE runs ADD COLUMN authority_registered INTEGER NOT NULL DEFAULT 0",
+    )
+
+
 # (version, name, apply_fn) each. The framework (unit 4) runs each apply_fn in its
 # own BEGIN IMMEDIATE/COMMIT and records the version only on success, so the
 # apply_fns issue plain DDL and touch neither the transaction nor the ledger.
@@ -373,6 +388,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     (10, "010_samplesheet_created", _migration_010_samplesheet_created),
     (11, "011_nvd_completed", _migration_011_nvd_completed),
     (12, "012_profiling_completed", _migration_012_profiling_completed),
+    (13, "013_authority_registered", _migration_013_authority_registered),
 )
 
 
