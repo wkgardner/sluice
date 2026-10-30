@@ -592,6 +592,26 @@ def _milestone_metrics(metadata) -> str:
     return (" \u00b7 " + " \u00b7 ".join(scalar_parts)) if scalar_parts else ""
 
 
+def _post_success_notice(notifier, run_name, metadata) -> None:
+    """Post a SUCCESS result's ``notice`` as its own thread reply, if it has one.
+
+    Gates never hold the notifier (they only return results \u2014 ADR-0002), so a gate
+    that has something a human must read beyond counts returns it in its metadata:
+    ``notice`` (the text) and ``notice_mention`` (whether to @-mention the on-call).
+    The registration gate uses this for its report of skipped samples. A missing or
+    empty ``notice`` posts nothing, so every other gate's thread is unchanged.
+    """
+    if not metadata or not metadata.get("notice"):
+        return
+    safe_notify(
+        notifier,
+        "post_milestone",
+        run_name,
+        str(metadata["notice"]),
+        mention=bool(metadata.get("notice_mention", False)),
+    )
+
+
 def process_run(config, run_name, *, registry, notifier=None, should_stop=None) -> str:
     """Drive one run through its gates until it blocks, one gate per look.
 
@@ -749,6 +769,7 @@ def process_run(config, run_name, *, registry, notifier=None, should_stop=None) 
                 f"{gate.name} completed in {format_duration(duration_ms)}"
                 f"{_milestone_metrics(result.metadata)}",
             )
+            _post_success_notice(notifier, run_name, result.metadata)
             continue  # drive the next gate
 
         if outcome is GateOutcome.HELD:

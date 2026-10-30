@@ -116,6 +116,9 @@ class RecordingNotifier:
 
     def __init__(self):
         self.calls = []
+        # The ``mention`` flag of each post_milestone, in call order — kept apart
+        # from ``calls`` so the 3-tuples other tests compare against stay stable.
+        self.mentions = []
 
     def open_run_thread(self, run_name, experiment_id=None, size_tb=None):
         """Record an open-thread call and return no thread id (A5 is Plan B)."""
@@ -127,8 +130,9 @@ class RecordingNotifier:
         self.calls.append(("update_run_header", run_name))
 
     def post_milestone(self, run_name, text, mention=False):
-        """Record a milestone post."""
+        """Record a milestone post (and, separately, whether it @-mentions)."""
         self.calls.append(("post_milestone", run_name, text))
+        self.mentions.append(mention)
 
     def finish_run_thread(self, run_name, outcome, reason=None):
         """Record a finish-thread call with its terminal outcome."""
@@ -2047,3 +2051,59 @@ def test_completed_milestones_carry_duration_and_scalar_metrics(prepared):
     assert "downloaded files 641" in text
     assert "/tmp/x" not in text, "string metadata must stay out of Slack"
     assert "ok" not in text, "bool metadata is not a metric"
+
+
+def _notice_gate(metadata):
+    """A one-gate SUCCESS fixture returning ``metadata`` — for the notice convention."""
+    return Gate(
+        id="notice_gate",
+        name="Notice probe",
+        satisfied_column="mock_alpha_done",
+        order=1,
+        needs=(),
+        produces=(),
+        run=lambda context: GateResult(GateOutcome.SUCCESS, metadata=metadata),
+        invalidate=lambda context: None,
+    )
+
+
+def test_a_success_notice_is_posted_after_the_completion_milestone(prepared):
+    """A ``notice`` string in SUCCESS metadata becomes its own thread reply.
+
+    Gates never hold the notifier; a gate with something a human must read (the
+    registration report: which samples were skipped and why) returns it as
+    ``notice``, and ``notice_mention`` decides whether the on-call is @-mentioned.
+    The completion milestone still comes first, so the thread reads in order.
+    """
+    gate = _notice_gate(
+        {"inserted": 3, "notice": "2 samples skipped: A, B", "notice_mention": True}
+    )
+    version, registry = _single_gate_registry(gate)
+    with write_txn(prepared["state_file"]) as connection:
+        insert_run(connection, "notice_run", pipeline_version=version)
+    notifier = RecordingNotifier()
+
+    process_run(prepared, "notice_run", registry=registry, notifier=notifier)
+
+    milestones = [c[2] for c in notifier.calls if c[0] == "post_milestone"]
+    assert len(milestones) == 2
+    assert milestones[0].startswith("Notice probe completed in ")
+    assert "inserted 3" in milestones[0]
+    assert "skipped: A, B" not in milestones[0], "the notice is not a metric"
+    assert milestones[1] == "2 samples skipped: A, B"
+    assert notifier.mentions == [False, True]
+
+
+def test_no_notice_means_exactly_one_milestone(prepared):
+    """Without ``notice`` the thread is unchanged: one completion milestone, no mention."""
+    gate = _notice_gate({"inserted": 3})
+    version, registry = _single_gate_registry(gate)
+    with write_txn(prepared["state_file"]) as connection:
+        insert_run(connection, "quiet_run", pipeline_version=version)
+    notifier = RecordingNotifier()
+
+    process_run(prepared, "quiet_run", registry=registry, notifier=notifier)
+
+    milestones = [c[2] for c in notifier.calls if c[0] == "post_milestone"]
+    assert len(milestones) == 1
+    assert notifier.mentions == [False]
