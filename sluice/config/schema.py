@@ -307,6 +307,16 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
         "location. Samples whose prefix is not on it are skipped and reported.",
         probe=ProbeKind.ENDPOINT,
     ),
+    ConfigField(
+        "labkey_register_dry_run",
+        FieldKind.VALUE,
+        "sample registration",
+        "When true, registration reads LabKey and reports what it would insert, "
+        "but inserts nothing — and still counts the step as done. Re-run those runs "
+        "for real with `sluice reset-gate <run> registration` after setting false.",
+        probe=ProbeKind.NONE,
+        default=True,
+    ),
     # -- NVD ----------------------------------------------------------------
     ConfigField(
         "nvd_repo_dir",

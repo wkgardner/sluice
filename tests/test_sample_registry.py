@@ -130,7 +130,11 @@ def test_truncated_authority_read_raises():
 def test_registered_labels_filters_to_the_labels_asked_about():
     """The lookup is limited to this run's labels, so a big list is never capped."""
     fake_api = FakeApi(
-        {REGISTRY_LIST: _rows([{"sequence_sample_label": "WI_Madison_MMSD_20261006_S7"}])}
+        {
+            REGISTRY_LIST: _rows(
+                [{"sequence_sample_label": "WI_Madison_MMSD_20261006_S7"}]
+            )
+        }
     )
 
     found = _client(fake_api).fetch_registered_labels(

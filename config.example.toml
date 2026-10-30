@@ -109,6 +109,11 @@ labkey_sample_registry_list = "<labkey_sample_registry_list>"
 # location. Samples whose prefix is not on it are skipped and reported.
 labkey_sample_authority_list = "<labkey_sample_authority_list>"
 
+# When true, registration reads LabKey and reports what it would insert, but
+# inserts nothing — and still counts the step as done. Re-run those runs for real
+# with `sluice reset-gate <run> registration` after setting false.
+labkey_register_dry_run = true
+
 [nvd]
 
 # The NVD repository checkout. Its pyproject.toml pins the tool version sluice
