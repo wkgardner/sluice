@@ -96,6 +96,19 @@ labkey_query = "<labkey_query>"
 # File containing the LabKey API key. Never stored in config itself.
 labkey_api_key_file = "~/.sluice/secrets/labkey_api_key"
 
+[sample_registration]
+
+# LabKey project path holding the sample-metadata and authority lists.
+labkey_sample_registry_project = "<labkey_sample_registry_project>"
+
+# LabKey list that new samples are registered into, one row per sample label.
+# Point it at a test list while shaking down.
+labkey_sample_registry_list = "<labkey_sample_registry_list>"
+
+# LabKey list of known sample-name prefixes and their sewershed name and
+# location. Samples whose prefix is not on it are skipped and reported.
+labkey_sample_authority_list = "<labkey_sample_authority_list>"
+
 [nvd]
 
 # The NVD repository checkout. Its pyproject.toml pins the tool version sluice

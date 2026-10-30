@@ -280,6 +280,33 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
         probe=ProbeKind.SECRET_READABLE,
         home_relative="secrets/labkey_api_key",
     ),
+    # -- Sample registration -------------------------------------------------
+    # The ``registration`` gate's LabKey lists. Same server and API key as the
+    # experiment gate, but a different project: the sample-metadata lists live
+    # with the lab's metagenomics project, not with the experiments.
+    ConfigField(
+        "labkey_sample_registry_project",
+        FieldKind.VALUE,
+        "sample registration",
+        "LabKey project path holding the sample-metadata and authority lists.",
+        probe=ProbeKind.ENDPOINT,
+    ),
+    ConfigField(
+        "labkey_sample_registry_list",
+        FieldKind.VALUE,
+        "sample registration",
+        "LabKey list that new samples are registered into, one row per sample "
+        "label. Point it at a test list while shaking down.",
+        probe=ProbeKind.ENDPOINT,
+    ),
+    ConfigField(
+        "labkey_sample_authority_list",
+        FieldKind.VALUE,
+        "sample registration",
+        "LabKey list of known sample-name prefixes and their sewershed name and "
+        "location. Samples whose prefix is not on it are skipped and reported.",
+        probe=ProbeKind.ENDPOINT,
+    ),
     # -- NVD ----------------------------------------------------------------
     ConfigField(
         "nvd_repo_dir",
