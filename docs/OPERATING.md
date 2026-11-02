@@ -365,6 +365,7 @@ files, and the shortfall.
 | `experiment gate: LabKey ...` | LabKey was unreachable or refused. | Check LabKey is up and the credentials are valid. |
 | `samplesheet gate: ...` | NVD's samplesheet tool failed. | The tool's own error follows the colon. Often a missing lane file or a bad `nvd_repo_dir`. |
 | `nvd gate: ... exited N` | The NVD pipeline itself failed. | The message names the log file. Read it, fix the cause, then clear the error — the run resumes from Nextflow's last checkpoint. |
+| `registration gate: ...` | LabKey couldn't be read or refused the insert, or the authority list came back empty. It stops rather than guessing, because a bad read could register every sample twice. | Check LabKey is up and the list names in `~/.sluice/config.toml` are right, then clear the error. Re-running is safe: rows that already landed are skipped. |
 | `profiling gate: ... exited N` | The silly-fast-bfx pipeline itself failed. | The message names the log (`profiling_log_dir/<experiment id>.log`). Read it, fix the cause, then clear the error — the run resumes from Nextflow's last checkpoint. **NVD waits until profiling passes.** |
 | `profiling gate: ... N failed task(s)` | Nextflow exited 0 but some tasks failed (the site config is ignoring task errors). | The message names the `execution_trace.txt`; its `FAILED` rows say which tasks. Fix and clear the error. |
 | `profiling gate: ... wrote no .../execution_trace.txt` | Nextflow exited 0 without producing a trace, so there is no evidence the work happened. | Read the log it names. Usually the pipeline stopped before starting any task (bad params file, schema validation). |
@@ -472,11 +473,16 @@ Most things can wait. These probably cannot:
 
 ## Current pipeline scope
 
-Runs detected under **`production-v3.2`** go: **experiment → download → checksum → samplesheet →
-profiling → nvd**. Runs detected earlier stay on **`production-v3.1`** (the same chain without
-`profiling`) for good — a run keeps the profile it was stamped with, so nothing old re-runs. Which
-profile new runs get is switched with `sluice set-default-profile <version>`; `sluice status` shows
-the current one.
+Each run follows the profile it was stamped with when detected, for good, so nothing old re-runs:
+
+| Profile | Gates |
+|---|---|
+| `production-v3.1` | experiment → download → checksum → samplesheet → nvd |
+| `production-v3.2` | experiment → download → checksum → samplesheet → profiling → nvd |
+| `production-v3.3` | experiment → download → checksum → samplesheet → registration → profiling → nvd |
+
+Which profile new runs get is switched with `sluice set-default-profile <version>`; `sluice status`
+shows the current one.
 
 A run that passes every gate of its profile is reported `complete`, and that is truthful — it is complete *under the
 contract that exists today*. The Globus backup pair is deferred until Will returns; when it lands, runs simply continue further
@@ -491,6 +497,26 @@ There is currently **no operator command to exclude a gate from a run.** The cap
 inside sluice and is audited, but it is not wired to the command line yet, so a pipeline stage
 cannot be skipped for a single run today. `sluice show <run>` will display exclusions if any exist.
 If you need one, that is a "get hold of Will" situation.
+
+**Registration records each sample in LabKey's sample-metadata list** (`production-v3.3` onward),
+right after the samplesheet. It posts a report to the run's Slack thread:
+
+- **`✅`** — every sample is registered, either just now or already.
+- **`⚠️` with an @-mention** — some samples could not be registered, because their name prefix is
+  not on the authority list or their name or date could not be parsed. **The run carries on**; these
+  samples have no metadata until someone adds the prefix or registers them by hand.
+- **`[DRY-RUN]`** — `labkey_register_dry_run` is on, so the report shows what it would have inserted
+  and **nothing was written**, yet the gate still counts as done. To do those runs for real, set
+  `labkey_register_dry_run = false`, then for each run:
+
+  ```bash
+  sluice hold <run> --reason "why"
+  sluice reset-gate <run> registration --reason "why"
+  sluice unhold <run>
+  ```
+
+  Only that gate re-runs. Runs stamped with an older profile never run registration at all, so
+  `reset-gate` cannot backfill them.
 
 **Profiling (silly-fast-bfx) runs before NVD** — a quick Deacon + Sylph screen of the raw reads,
 published under `profiling_results_base/<experiment id>/profiling-results/`. It is quick compared

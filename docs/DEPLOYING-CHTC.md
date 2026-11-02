@@ -113,6 +113,7 @@ in the file. These are the ones only you can answer:
 | **detection** | `remote_user`, `remote_host`, `remote_source_path` |
 | **storage** | `local_staging_dir`, `disk_quota_root` |
 | **labkey** | `labkey_server`, `labkey_experiments_project`, `labkey_query` |
+| **sample registration** | `labkey_sample_registry_project`, `labkey_sample_registry_list`, `labkey_sample_authority_list` |
 | **nvd** | `nvd_repo_dir`, `nvd_results_base` |
 | **nvd reference data** | `nvd_blast_db`, `nvd_blast_db_prefix`, `nvd_blast_db_version`, `nvd_taxonomy_dir`, `nvd_virus_index`, `nvd_virus_index_version` |
 | **nvd labkey upload** | `nvd_labkey_server`, `nvd_labkey_project_name`, `nvd_labkey_blast_fasta_list`, `nvd_labkey_blast_meta_hits_list`, `nvd_labkey_exp_id_guard_list` |
@@ -139,6 +140,18 @@ environment — so pixi on the host must satisfy that repo's `requires-pixi`.
 **Switching live runs onto profiling** is a separate, deliberate step: deploy, fill in and
 `sluice doctor` the profiling keys, then `sluice set-default-profile production-v3.2`. Only runs
 detected after that get the new gate.
+
+**Switching live runs onto registration** means `production-v3.3`, which also includes profiling,
+so finish profiling's setup first. `sluice doctor` checks the newest profile's keys, so it reports
+the sample registration and profiling keys as missing until they are filled in, even while the live
+database is on an older profile. Then:
+
+1. Fill in the sample registration keys, pointing `labkey_sample_registry_list` at a test list, and
+   leave `labkey_register_dry_run = true`.
+2. `sluice set-default-profile production-v3.3`, and read the `[DRY-RUN]` report on the next run.
+3. Set `labkey_register_dry_run = false` and point the list at the production one.
+
+Registration uses the LabKey API key, and step 3 is when it starts writing to the list.
 
 Two of these are worth extra care on CHTC:
 
