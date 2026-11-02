@@ -26,7 +26,7 @@ structurally in gate map §4). Shipping a partial pipeline into production is th
 configuration, not a hack: each new gate increment extends the pipeline with nothing behind it
 reworked.
 
-Gate map §3 fixes the full eight-gate target in TRUE execution order:
+The full target in TRUE execution order, as ``production-v3.3`` numbers it:
 
 ===== =================== ====================== ==========================================
 order gate id             satisfied_column       status
@@ -35,19 +35,20 @@ order gate id             satisfied_column       status
 1     ``download``        ``downloaded``         **built** (migration 008)
 2     ``checksum``        ``checksummed``        **built** (migration 009)
 3     ``samplesheet``     ``samplesheet_created`` **built** (migration 010)
-4     ``profiling``       ``profiling_completed`` **built** (migration 012) — v3.2 only
-5     ``nvd``             ``nvd_completed``      **built** (migration 011)
-6     ``globus_submit``   ``globus_submitted``   DEFERRED (plan 15 §3a)
-7     ``globus_verify``   ``clumped_data_backed_up`` DEFERRED (plan 15 §3a)
+4     ``registration``    ``authority_registered`` **built** (migration 013) — v3.3 on
+5     ``profiling``       ``profiling_completed`` **built** (migration 012) — v3.2 on
+6     ``nvd``             ``nvd_completed``      **built** (migration 011)
+7     ``globus_submit``   ``globus_submitted``   DEFERRED (plan 15 §3a)
+8     ``globus_verify``   ``clumped_data_backed_up`` DEFERRED (plan 15 §3a)
 ===== =================== ====================== ==========================================
 
-``registration`` (``authority_registered``, formerly listed at order 4) stays out permanently until
-C3 (``fetch_registered_labels`` must fail **closed**) is resolved; it was never built as a ``Gate``,
-so ``profiling`` (silly-fast-bfx, a sluice-only gate) took the free order-4 slot. If registration is
-ever built it joins a *new* profile version, where orders can be renumbered freely. The Globus pair is deferred by scope decision, not by design: a site that does not want
-Globus runs exactly this shape and completes at ``nvd`` on purpose (gate map §7).
+``order`` is only ever compared within one profile, so each version numbers its gates for itself:
+``profiling`` is 4 and ``nvd`` is 5 in v3.2, and they move down one in v3.3 to make room for
+``registration``. The Globus pair is deferred by scope decision, not by design: a site that does not
+want Globus runs exactly this shape and completes at ``nvd`` on purpose (gate map §7).
 """
 
+import dataclasses
 import types
 from collections.abc import Mapping
 
@@ -57,12 +58,14 @@ from sluice.gates.download import DOWNLOAD
 from sluice.gates.experiment import EXPERIMENT
 from sluice.gates.nvd import NVD
 from sluice.gates.profiling import PROFILING
+from sluice.gates.registration import REGISTRATION
 from sluice.gates.samplesheet import SAMPLESHEET
 
 __all__ = [
     "PRODUCTION_PROFILE",
     "PRODUCTION_PROFILES",
     "PRODUCTION_V3_1_PROFILE",
+    "PRODUCTION_V3_2_PROFILE",
     "PRODUCTION_VERSION",
 ]
 
@@ -70,7 +73,7 @@ __all__ = [
 # stored default onto each new run, and the daemon resolves it every look. A constant rather than a
 # literal at each use, so a typo is an ImportError instead of a per-run quarantine. An existing DB
 # keeps its stored default until an operator runs ``sluice set-default-profile``.
-PRODUCTION_VERSION = "production-v3.2"
+PRODUCTION_VERSION = "production-v3.3"
 
 PRODUCTION_V3_1_PROFILE: Profile = build_profile(
     "production-v3.1",
@@ -99,8 +102,8 @@ a bug to work around.
 
 """
 
-PRODUCTION_PROFILE: Profile = build_profile(
-    PRODUCTION_VERSION,
+PRODUCTION_V3_2_PROFILE: Profile = build_profile(
+    "production-v3.2",
     [
         (EXPERIMENT, Applicability.REQUIRED),
         (DOWNLOAD, Applicability.REQUIRED),
@@ -110,12 +113,35 @@ PRODUCTION_PROFILE: Profile = build_profile(
         (NVD, Applicability.REQUIRED),
     ],
 )
-"""The current live contract (``production-v3.2``): v3.1 plus ``profiling`` at order 4.
+"""v3.1 plus ``profiling`` at order 4 — FROZEN, for the same reason as v3.1.
 
 ``profiling`` runs silly-fast-bfx (Deacon + Sylph) over the samplesheet before NVD. A profiling
 failure quarantines the run, so NVD waits: the operator fixes and ``clear_error``s. (Excluding
 ``profiling`` for one run would let it go on to NVD, but ``control.exclude_gate`` is not on the CLI
 yet.)
+"""
+
+PRODUCTION_PROFILE: Profile = build_profile(
+    PRODUCTION_VERSION,
+    [
+        (EXPERIMENT, Applicability.REQUIRED),
+        (DOWNLOAD, Applicability.REQUIRED),
+        (CHECKSUM, Applicability.REQUIRED),
+        (SAMPLESHEET, Applicability.REQUIRED),
+        (REGISTRATION, Applicability.REQUIRED),
+        # Copies, not edits: v3.2 still lists the originals at orders 4 and 5.
+        (dataclasses.replace(PROFILING, order=5), Applicability.REQUIRED),
+        (dataclasses.replace(NVD, order=6), Applicability.REQUIRED),
+    ],
+)
+"""The newest contract (``production-v3.3``): v3.2 plus ``registration`` at order 4.
+
+``registration`` records this run's samples in LabKey's sample-metadata list and reports any it
+cannot register, before the slow compute starts. A sample it cannot register does not block the run;
+a LabKey problem does (it quarantines, failing closed).
+
+Switching the live DB onto this version also switches it onto ``profiling``, so that gate's
+prerequisites come first (docs/DEPLOYING-CHTC.md).
 
 A new gate means a new version, never an edit to a shipped one: copy the newest list, add the gate,
 bump ``PRODUCTION_VERSION``, register it below, and switch the live DB with
@@ -125,7 +151,11 @@ bump ``PRODUCTION_VERSION``, register it below, and switch the live DB with
 PRODUCTION_PROFILES: Mapping[str, Profile] = types.MappingProxyType(
     {
         profile.pipeline_version: profile
-        for profile in (PRODUCTION_V3_1_PROFILE, PRODUCTION_PROFILE)
+        for profile in (
+            PRODUCTION_V3_1_PROFILE,
+            PRODUCTION_V3_2_PROFILE,
+            PRODUCTION_PROFILE,
+        )
     }
 )
 """The shipped production registry, keyed by each profile's OWN ``pipeline_version``.

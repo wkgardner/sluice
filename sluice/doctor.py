@@ -408,6 +408,8 @@ GATE_CONFIG_GROUPS: Mapping[str, tuple[str, ...]] = {
     # "storage" for the same D2 reason as nvd: resolve_profiling_launch_dir
     # reads local_staging_dir to refuse a launch base inside the staging tree.
     "profiling": ("profiling", "storage"),
+    # "labkey" for the server address and API key, shared with the experiment gate.
+    "registration": ("labkey", "sample registration"),
 }
 
 # Config groups that are not a gate's. `sluice state` is universal; `slack`

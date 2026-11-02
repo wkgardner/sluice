@@ -39,6 +39,7 @@ _GATE_MODULES = {
     "samplesheet": ("sluice/gates/samplesheet.py", "sluice/gates/nvd_tool.py"),
     "nvd": ("sluice/gates/nvd.py",),
     "profiling": ("sluice/gates/profiling.py",),
+    "registration": ("sluice/gates/registration.py", "sluice/gates/sample_registry.py"),
 }
 
 

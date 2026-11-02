@@ -331,7 +331,7 @@ PROFILING = Gate(
     id="profiling",
     name="silly-fast-bfx profiling",
     satisfied_column="profiling_completed",  # migration 012
-    order=4,  # TRUE execution order — after samplesheet (3), before nvd (5)
+    order=4,  # TRUE execution order — after samplesheet (3), before nvd (5); v3.3 renumbers a copy to 5
     needs=("samplesheet",),  # consumes samplesheet.csv; nvd does not need this gate
     produces=("profiling-results/",),
     # No wiring wrapper: the ``popen`` seam is a default argument.

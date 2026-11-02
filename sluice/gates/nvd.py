@@ -352,8 +352,8 @@ NVD = Gate(
     id="nvd",
     name="NVD preprocess",
     satisfied_column="nvd_completed",  # migration 011
-    order=5,  # TRUE execution order — after samplesheet (registration is order 4)
-    needs=("samplesheet",),  # NOT registration: it is DISABLED (⚑D)
+    order=5,  # TRUE execution order — production-v3.3 renumbers a copy to 6
+    needs=("samplesheet",),  # what it reads; earlier gates only run first by order
     produces=("nvd-results/",),
     # No wiring wrapper: the ``popen`` seam is a default argument, so the gate
     # function IS the production entry point.
@@ -367,7 +367,7 @@ NVD = Gate(
 )
 """The ``nvd`` gate — Plan B gate 5, the heaviest stage.
 
-``needs=("samplesheet",)`` and not ``("registration",)``: registration is DISABLED (⚑D), and a
-disabled gate satisfies its dependents by absence (ADR-0004 d.2), so depending on it would be both
-redundant and misleading about what this gate actually consumes.
+``needs=("samplesheet",)`` and not ``("registration",)``: NVD consumes the samplesheet, not anything
+registration produces, and v3.1 and v3.2 list this gate without registration at all. In v3.3 the
+lower order alone keeps registration ahead of it.
 """

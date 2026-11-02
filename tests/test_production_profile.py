@@ -1,10 +1,10 @@
 """The shipped production profiles — the registry entries live runs are stamped with.
 
-Two versions ship side by side: ``production-v3.1`` (the original five gates, frozen) and
-``production-v3.2`` (v3.1 plus the ``profiling`` gate at order 4). A run's ``pipeline_version`` is
-stamped once at detection, so v3.1 must stay resolvable and unchanged for every run already stamped
-with it — adding a gate to v3.1 in place would hand every historical run, completed ones included,
-a new unsatisfied gate.
+Three versions ship side by side: ``production-v3.1`` (the original five gates, frozen),
+``production-v3.2`` (v3.1 plus ``profiling``, frozen) and ``production-v3.3`` (v3.2 plus
+``registration``). A run's ``pipeline_version`` is stamped once at detection, so a shipped version
+must stay resolvable and unchanged for every run already stamped with it — adding a gate to one in
+place would hand every historical run, completed ones included, a new unsatisfied gate.
 
 Detection stamps ``runs.pipeline_version`` from ``metadata.pipeline_profile``, and the daemon
 resolves that string against its assembled registry on every look. A value with no registry entry
@@ -31,7 +31,8 @@ from sluice.core.profile import (
 )
 
 PRODUCTION_VERSION = "production-v3.1"
-CURRENT_VERSION = "production-v3.2"
+V3_2_VERSION = "production-v3.2"
+CURRENT_VERSION = "production-v3.3"
 
 
 def test_production_profile_resolves_from_the_shipped_registry():
@@ -125,7 +126,7 @@ def test_deferred_gates_are_absent_rather_than_silently_required():
     """
     from sluice.gates.profiles import PRODUCTION_PROFILES
 
-    profile = load_profile(PRODUCTION_VERSION, PRODUCTION_PROFILES)
+    profile = load_profile(CURRENT_VERSION, PRODUCTION_PROFILES)
     contract_ids = {gate.id for gate in required_gates(profile)}
 
     assert "globus_submit" not in contract_ids, (
@@ -133,10 +134,6 @@ def test_deferred_gates_are_absent_rather_than_silently_required():
     )
     assert "globus_verify" not in contract_ids, (
         "globus_verify is deferred (plan 15 §3a) and must not block completion"
-    )
-    assert "registration" not in contract_ids, (
-        "registration is DISABLED by gate-map ⚑D — C3 fail-closed is the "
-        "precondition to ever enabling it"
     )
 
 
@@ -173,11 +170,11 @@ def test_v3_1_is_frozen_without_the_profiling_gate():
     ]
 
 
-def test_v3_2_runs_profiling_after_samplesheet_and_before_nvd():
-    """``production-v3.2`` is v3.1 plus ``profiling`` (order 4), REQUIRED, before ``nvd``."""
+def test_v3_2_is_frozen_without_the_registration_gate():
+    """``production-v3.2`` is v3.1 plus ``profiling`` (order 4), REQUIRED, before ``nvd`` — no more."""
     from sluice.gates.profiles import PRODUCTION_PROFILES
 
-    profile = load_profile(CURRENT_VERSION, PRODUCTION_PROFILES)
+    profile = load_profile(V3_2_VERSION, PRODUCTION_PROFILES)
     contract_ids = [gate.id for gate in required_gates(profile)]
 
     assert contract_ids == [
@@ -189,10 +186,55 @@ def test_v3_2_runs_profiling_after_samplesheet_and_before_nvd():
         "nvd",
     ]
     assert profile.applicability["profiling"] is Applicability.REQUIRED
+    assert [gate.order for gate in profile.gates] == [0, 1, 2, 3, 4, 5]
+
+
+def test_v3_3_registers_samples_after_samplesheet_and_before_profiling():
+    """``production-v3.3`` is v3.2 plus ``registration``, every gate REQUIRED.
+
+    Registration sits right after samplesheet because it reads the samplesheet, and it comes
+    before the slow compute so a registration problem surfaces before hours of pipeline work.
+    """
+    from sluice.gates.profiles import PRODUCTION_PROFILES
+
+    profile = load_profile(CURRENT_VERSION, PRODUCTION_PROFILES)
+
+    assert [gate.id for gate in required_gates(profile)] == [
+        "experiment",
+        "download",
+        "checksum",
+        "samplesheet",
+        "registration",
+        "profiling",
+        "nvd",
+    ]
+    assert [gate.order for gate in profile.gates] == [0, 1, 2, 3, 4, 5, 6]
+
+
+def test_renumbering_for_v3_3_leaves_the_shipped_gate_objects_alone():
+    """v3.3 renumbers COPIES of profiling and nvd; only ``order`` differs from the originals.
+
+    ``NVD`` and ``PROFILING`` are also listed in the frozen versions, so changing them in place
+    would quietly edit those contracts.
+    """
+    from dataclasses import replace
+
+    from sluice.gates.nvd import NVD
+    from sluice.gates.profiles import PRODUCTION_PROFILES
+    from sluice.gates.profiling import PROFILING
+
+    gates_by_id = {
+        gate.id: gate
+        for gate in load_profile(CURRENT_VERSION, PRODUCTION_PROFILES).gates
+    }
+
+    assert (PROFILING.order, NVD.order) == (4, 5)
+    assert gates_by_id["profiling"] == replace(PROFILING, order=5)
+    assert gates_by_id["nvd"] == replace(NVD, order=6)
 
 
 def test_the_default_for_fresh_databases_is_the_newest_profile():
-    """``PRODUCTION_VERSION`` (what a fresh DB is seeded with) is v3.2.
+    """``PRODUCTION_VERSION`` (what a fresh DB is seeded with) is v3.3.
 
     An existing DB keeps its stored default until an operator runs
     ``sluice set-default-profile`` — ``prepare_database`` never overwrites it.

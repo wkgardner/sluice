@@ -688,6 +688,11 @@ def test_doctor_exits_zero_on_warnings_only(tmp_path, capsys, monkeypatch):
         profiling_results_base=str(tmp_path),
         profiling_launch_base=str(launch_base),
         profiling_log_dir=str(tmp_path),
+        # The registration gate's lists. Placeholders: doctor only asks that
+        # they are filled in, and never contacts LabKey.
+        labkey_sample_registry_project="Proj/Samples",
+        labkey_sample_registry_list="example_registry_list",
+        labkey_sample_authority_list="example_authority_list",
         slack_enabled=False,
     )
 
