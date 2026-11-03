@@ -22,6 +22,10 @@ all for errata **C3** (the poller fails OPEN, which mints duplicate rows):
 - an **empty** authority list raises — it is a wrong list name, not "no prefix is
   valid";
 - a **truncated** read raises (LabKey's ``rowCount`` larger than the rows returned);
+- a successful reply with no real result raises — the client hands back a status dict
+  for a non-JSON 2xx body (a proxy's maintenance page), which must not read as "0 rows";
+- an insert is **read back** before it counts, because a reply can look accepted
+  without the rows having landed;
 - the registered-labels lookup is filtered to the labels being asked about
   (an ``IN`` filter) instead of reading the whole list, so a large list can never be
   silently capped.
@@ -118,7 +122,9 @@ def _default_api_factory(
     return factory
 
 
-def _select_complete(api, *, query_name: str, columns: str, filter_array, what: str):
+def _select_complete(
+    api_factory, *, query_name: str, columns: str, filter_array, what: str
+):
     """Run one select and return its rows, raising on any failure or truncation.
 
     ``what`` names the read in the error message ("authority list", "registered
@@ -126,7 +132,7 @@ def _select_complete(api, *, query_name: str, columns: str, filter_array, what: 
     than that means the server capped the read, which would hide real rows.
     """
     try:
-        result = api.select_rows(
+        result = api_factory().select_rows(
             schema_name=_LISTS_SCHEMA,
             query_name=query_name,
             columns=columns,
@@ -138,8 +144,17 @@ def _select_complete(api, *, query_name: str, columns: str, filter_array, what: 
             f"({type(api_error).__name__})"
         ) from api_error
 
-    rows = result.get("rows", [])
-    total = result.get("rowCount", len(rows))
+    rows = result.get("rows") if isinstance(result, dict) else None
+    total = result.get("rowCount") if isinstance(result, dict) else None
+    if (
+        not isinstance(rows, list)
+        or not isinstance(total, int)
+        or not all(isinstance(row, dict) for row in rows)
+    ):
+        raise SampleRegistryError(
+            f"the {what} read from LabKey list {query_name!r} did not return a usable "
+            "result — refusing to treat that as an empty list"
+        )
     if total > len(rows):
         raise SampleRegistryError(
             f"the {what} read from LabKey list {query_name!r} was truncated "
@@ -178,7 +193,7 @@ class SampleRegistryClient:
                 empty (an empty authority list is a misconfigured list name).
         """
         rows = _select_complete(
-            self._api_factory(),
+            self._api_factory,
             query_name=self._authority_list,
             columns=_AUTHORITY_COLUMNS,
             filter_array=None,
@@ -205,30 +220,37 @@ class SampleRegistryClient:
         An empty ``labels`` returns an empty set without any network call.
 
         Raises:
-            SampleRegistryError: the read failed or was truncated. Never returns an
-                empty set in place of an answer (the C3 fix).
+            SampleRegistryError: the read failed, was truncated, or returned a row
+                without its label. Never returns an empty set in place of an answer
+                (the C3 fix).
         """
         wanted = tuple(labels)
         if not wanted:
             return set()
         rows = _select_complete(
-            self._api_factory(),
+            self._api_factory,
             query_name=self._registry_list,
             columns=_LABEL_COLUMN,
             filter_array=[_InFilter(_LABEL_COLUMN, wanted)],
             what="registered labels",
         )
-        return {row[_LABEL_COLUMN] for row in rows if row.get(_LABEL_COLUMN)}
+        found_labels = {row.get(_LABEL_COLUMN) for row in rows}
+        if not all(found_labels):
+            raise SampleRegistryError(
+                f"the registered labels read from LabKey list {self._registry_list!r} "
+                "did not return a usable result — a matched row has no label"
+            )
+        return found_labels
 
     def insert_rows(self, rows: list[dict]) -> None:
-        """Insert ``rows`` into the registry list in one call.
+        """Insert ``rows`` into the registry list in one call, then read them back.
 
         Raises:
-            SampleRegistryError: LabKey rejected or could not take the insert.
+            SampleRegistryError: LabKey rejected or could not take the insert, or the
+                rows are not all there afterwards.
         """
-        api = self._api_factory()
         try:
-            api.insert_rows(
+            self._api_factory().insert_rows(
                 schema_name=_LISTS_SCHEMA, query_name=self._registry_list, rows=rows
             )
         except Exception as api_error:  # noqa: BLE001 — every world failure fails closed
@@ -236,6 +258,14 @@ class SampleRegistryClient:
                 f"LabKey rejected the insert of {len(rows)} row(s) into list "
                 f"{self._registry_list!r} ({type(api_error).__name__})"
             ) from api_error
+
+        inserted_labels = {row[_LABEL_COLUMN] for row in rows}
+        missing_labels = inserted_labels - self.fetch_registered_labels(inserted_labels)
+        if missing_labels:
+            raise SampleRegistryError(
+                f"LabKey accepted the insert into list {self._registry_list!r}, but "
+                f"{len(missing_labels)} of {len(inserted_labels)} row(s) are not there"
+            )
 
 
 def make_sample_registry_client(

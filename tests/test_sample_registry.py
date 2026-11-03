@@ -124,6 +124,52 @@ def test_truncated_authority_read_raises():
         _client(fake_api).fetch_authority_map()
 
 
+@pytest.mark.parametrize(
+    "unusable_response",
+    [
+        # What the real client returns for a 2xx reply that is not JSON, such as a
+        # maintenance page from a proxy.
+        {"status_code": 200, "message": "not valid json", "content": b"<html>"},
+        {},
+        [],
+        {"rows": []},  # no rowCount
+        {"rows": [], "rowCount": None},
+        {"rows": None, "rowCount": 0},
+        {"rows": ["not a row"], "rowCount": 1},
+    ],
+)
+def test_a_response_that_is_not_a_result_raises_on_both_reads(unusable_response):
+    """A successful reply without a real result is never read as "0 rows"."""
+    fake_api = FakeApi(
+        {AUTHORITY_LIST: unusable_response, REGISTRY_LIST: unusable_response}
+    )
+
+    with pytest.raises(SampleRegistryError, match="usable"):
+        _client(fake_api).fetch_authority_map()
+    with pytest.raises(SampleRegistryError, match="usable"):
+        _client(fake_api).fetch_registered_labels(["A_20261006_S1"])
+
+
+def test_a_failure_building_the_api_raises_the_registry_error():
+    """A missing key file or package gets the same fail-closed signal as a failed call."""
+
+    def api_factory_that_fails():
+        raise FileNotFoundError("the key file path")
+
+    client = SampleRegistryClient(
+        api_factory=api_factory_that_fails,
+        registry_list=REGISTRY_LIST,
+        authority_list=AUTHORITY_LIST,
+    )
+
+    with pytest.raises(SampleRegistryError, match="FileNotFoundError"):
+        client.fetch_authority_map()
+    with pytest.raises(SampleRegistryError, match="FileNotFoundError"):
+        client.fetch_registered_labels(["A_20261006_S1"])
+    with pytest.raises(SampleRegistryError, match="FileNotFoundError"):
+        client.insert_rows([{"sequence_sample_label": "A_20261006_S1"}])
+
+
 # ---- fetch_registered_labels ----------------------------------------------
 
 
@@ -174,19 +220,42 @@ def test_truncated_registered_labels_read_raises():
         _client(fake_api).fetch_registered_labels(["A_20261006_S1"])
 
 
+def test_a_matched_row_without_its_label_raises():
+    """A row the filter matched must carry the label; dropping it would look unregistered."""
+    fake_api = FakeApi({REGISTRY_LIST: _rows([{"sequence_sample_label": None}])})
+
+    with pytest.raises(SampleRegistryError, match="usable"):
+        _client(fake_api).fetch_registered_labels(["A_20261006_S1"])
+
+
 # ---- insert_rows ------------------------------------------------------------
 
 
 def test_insert_rows_writes_to_the_registry_list():
     """Rows go to ``lists.<registry_list>`` unchanged."""
-    fake_api = FakeApi()
     rows = [{"sequence_sample_label": "A_20261006_S1"}]
+    fake_api = FakeApi({REGISTRY_LIST: _rows(rows)})  # the read-back finds them
 
     _client(fake_api).insert_rows(rows)
 
     assert fake_api.insert_calls == [
         {"schema_name": "lists", "query_name": REGISTRY_LIST, "rows": rows}
     ]
+
+
+def test_an_insert_that_did_not_land_raises():
+    """A reply that looks accepted is not proof: the rows must be there on read-back."""
+    fake_api = FakeApi(
+        {REGISTRY_LIST: _rows([{"sequence_sample_label": "A_20261006_S1"}])}
+    )
+
+    with pytest.raises(SampleRegistryError, match="1 of 2"):
+        _client(fake_api).insert_rows(
+            [
+                {"sequence_sample_label": "A_20261006_S1"},
+                {"sequence_sample_label": "B_20261006_S2"},
+            ]
+        )
 
 
 def test_insert_failure_raises_without_leaking_the_error_body():
