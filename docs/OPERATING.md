@@ -365,7 +365,7 @@ files, and the shortfall.
 | `experiment gate: LabKey ...` | LabKey was unreachable or refused. | Check LabKey is up and the credentials are valid. |
 | `samplesheet gate: ...` | NVD's samplesheet tool failed. | The tool's own error follows the colon. Often a missing lane file or a bad `nvd_repo_dir`. |
 | `nvd gate: ... exited N` | The NVD pipeline itself failed. | The message names the log file. Read it, fix the cause, then clear the error — the run resumes from Nextflow's last checkpoint. |
-| `registration gate: ...` | LabKey couldn't be read or refused the insert, or the authority list came back empty. It stops rather than guessing, because a bad read could register every sample twice. | Check LabKey is up and the list names in `~/.sluice/config.toml` are right, then clear the error. Re-running is safe: rows that already landed are skipped. |
+| `registration gate: ...` | LabKey couldn't be read, sent back something unusable, refused the insert or didn't keep the rows, or the authority list came back empty. It stops rather than guessing, because a bad read could register every sample twice. | Check LabKey is up and the list names in `~/.sluice/config.toml` are right, then clear the error. Re-running is safe: rows that already landed are skipped. |
 | `profiling gate: ... exited N` | The silly-fast-bfx pipeline itself failed. | The message names the log (`profiling_log_dir/<experiment id>.log`). Read it, fix the cause, then clear the error — the run resumes from Nextflow's last checkpoint. **NVD waits until profiling passes.** |
 | `profiling gate: ... N failed task(s)` | Nextflow exited 0 but some tasks failed (the site config is ignoring task errors). | The message names the `execution_trace.txt`; its `FAILED` rows say which tasks. Fix and clear the error. |
 | `profiling gate: ... wrote no .../execution_trace.txt` | Nextflow exited 0 without producing a trace, so there is no evidence the work happened. | Read the log it names. Usually the pipeline stopped before starting any task (bad params file, schema validation). |
@@ -507,7 +507,8 @@ right after the samplesheet. It posts a report to the run's Slack thread:
   samples have no metadata until someone adds the prefix or registers them by hand.
 - **`[DRY-RUN]`** — `labkey_register_dry_run` is on, so the report shows what it would have inserted
   and **nothing was written**, yet the gate still counts as done. To do those runs for real, set
-  `labkey_register_dry_run = false`, then for each run:
+  `labkey_register_dry_run = false` and restart the daemon (it reads the config only at startup;
+  without a restart the gate just dry-runs again). Then for each run:
 
   ```bash
   sluice hold <run> --reason "why"

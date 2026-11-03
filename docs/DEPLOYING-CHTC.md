@@ -149,9 +149,13 @@ database is on an older profile. Then:
 1. Fill in the sample registration keys, pointing `labkey_sample_registry_list` at a test list, and
    leave `labkey_register_dry_run = true`.
 2. `sluice set-default-profile production-v3.3`, and read the `[DRY-RUN]` report on the next run.
-3. Set `labkey_register_dry_run = false` and point the list at the production one.
+3. Set `labkey_register_dry_run = false`, still on the test list, and restart the daemon. Check that
+   the next run's rows really landed in the test list.
+4. Point `labkey_sample_registry_list` at the production list and restart the daemon again.
 
-Registration uses the LabKey API key, and step 3 is when it starts writing to the list.
+The daemon reads the config only at startup, so an edit does nothing until it restarts. Registration
+uses the LabKey API key throughout; step 3 is when it first writes to a list, and step 4 is when it
+writes to the production one.
 
 Two of these are worth extra care on CHTC:
 
