@@ -366,8 +366,8 @@ files, and the shortfall.
 | `samplesheet gate: ...` | NVD's samplesheet tool failed. | The tool's own error follows the colon. Often a missing lane file or a bad `nvd_repo_dir`. |
 | `nvd gate: ... exited N` | The NVD pipeline itself failed. | The message names the log file. Read it, fix the cause, then clear the error — the run resumes from Nextflow's last checkpoint. |
 | `registration gate: ...` | LabKey couldn't be read, sent back something unusable, refused the insert or didn't keep the rows, or the authority list came back empty. It stops rather than guessing, because a bad read could register every sample twice. | Check LabKey is up and the list names in `~/.sluice/config.toml` are right, then clear the error. Re-running is safe: rows that already landed are skipped. |
-| `profiling gate: ... exited N` | The silly-fast-bfx pipeline itself failed. | The message names the log (`profiling_log_dir/<experiment id>.log`). Read it, fix the cause, then clear the error — the run resumes from Nextflow's last checkpoint. **NVD waits until profiling passes.** |
-| `profiling gate: ... N failed task(s)` | Nextflow exited 0 but some tasks failed (the site config is ignoring task errors). | The message names the `execution_trace.txt`; its `FAILED` rows say which tasks. Fix and clear the error. |
+| `profiling gate: ... exited N` | The REMV pipeline itself failed. | The message names the log (`profiling_log_dir/<experiment id>.log`). Read it, fix the cause, then clear the error — the run resumes from Nextflow's last checkpoint. **NVD waits until profiling passes.** |
+| `profiling gate: ... N task(s) never succeeded` | Nextflow exited 0 but some tasks failed on every attempt (the site config is ignoring task errors). A task that failed and then passed on a retry is not counted. | The message names the `execution_trace.txt`; its `FAILED` rows say which tasks. Fix and clear the error. |
 | `profiling gate: ... wrote no .../execution_trace.txt` | Nextflow exited 0 without producing a trace, so there is no evidence the work happened. | Read the log it names. Usually the pipeline stopped before starting any task (bad params file, schema validation). |
 | `profiling_launch_base ... is inside local_staging_dir` | A configuration mistake, not a run problem. | Same rule as NVD's launch directory: local disk only. Fix the config and clear the error. |
 | `nvd_launch_base ... is inside local_staging_dir` | A configuration mistake, not a run problem. | The NVD launch directory must be on local disk, not the shared staging tree, or resuming silently does nothing. Fix the config and clear the error. |
@@ -519,9 +519,10 @@ right after the samplesheet. It posts a report to the run's Slack thread:
   Only that gate re-runs. Runs stamped with an older profile never run registration at all, so
   `reset-gate` cannot backfill them.
 
-**Profiling (silly-fast-bfx) runs before NVD** — a quick Deacon + Sylph screen of the raw reads,
-published under `profiling_results_base/<experiment id>/profiling-results/`. It is quick compared
-with NVD, but on CHTC it still waits in the HTCondor queue. **If it fails, the run is quarantined
+**Profiling (REMV) runs before NVD** — Deacon host depletion, read QC, then sylph and EsViritu
+viral calls, published under `profiling_results_base/<experiment id>/results/` (work tree beside it
+in `work/`). Its tables carry `run_id` `rww_<sequencing date>_<experiment id>`. It is quicker than
+NVD, but on CHTC it still waits in the HTCondor queue. **If it fails, the run is quarantined
 and NVD does not start** until the cause is fixed and the error cleared. Its log is
 `profiling_log_dir/<experiment id>.log`, appended across retries like NVD's.
 

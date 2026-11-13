@@ -209,17 +209,19 @@ nvd_labkey_blast_meta_hits_list = "<nvd_labkey_blast_meta_hits_list>"
 
 [profiling]
 
-# The silly-fast-bfx pipeline checkout. Its pyproject.toml's dev environment
-# pins the Nextflow (>=26.04.6) the pipeline requires.
+# The REMV (rapid-ww-metagenomics) pipeline checkout. Its pixi.toml pins the
+# Nextflow (>=26.04.0) the pipeline requires.
 profiling_repo_dir = "<profiling_repo_dir>"
 
-# The operator's silly-fast-bfx params YAML: the deacon and sylph reference
-# specs, skip_skope: true. Must NOT set input, results or work_dir — sluice
-# passes those per run. Keep it in ~/.sluice/profiling/.
+# The operator's REMV params YAML: reference paths, a shared
+# ospool_staging_root (holding containers/) and ospool_accounting_group. Must
+# NOT set input, outdir or run_id — sluice passes those per run. Keep it in
+# ~/.sluice/profiling/.
 profiling_params_file = "<profiling_params_file>"
 
-# The Nextflow site config (CHTC / nf-ospool executor, container). No tower
-# block or other secrets. Keep it in ~/.sluice/profiling/.
+# The Nextflow site config: the OSPool config file that ships with REMV (CHTC
+# executor and the container each process runs in). No tower block or other
+# secrets.
 profiling_site_config = "<profiling_site_config>"
 
 # Base directory for per-experiment profiling results and work trees. Must be
@@ -234,8 +236,8 @@ profiling_launch_base = "~/.sluice/profiling-launch"
 # Per-experiment profiling pipeline logs, appended across retries.
 profiling_log_dir = "~/.sluice/logs/profiling"
 
-# Nextflow profile from the site config to run under (e.g. chtc_htc). Leave
-# empty for none.
+# Nextflow profile from the site config to run under. REMV's OSPool config
+# has none, so leave it empty.
 # Optional — leave empty to switch it off.
 profiling_profile = "<profiling_profile>"
 

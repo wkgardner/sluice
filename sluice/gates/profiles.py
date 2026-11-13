@@ -115,7 +115,7 @@ PRODUCTION_V3_2_PROFILE: Profile = build_profile(
 )
 """v3.1 plus ``profiling`` at order 4 — FROZEN, for the same reason as v3.1.
 
-``profiling`` runs silly-fast-bfx (Deacon + Sylph) over the samplesheet before NVD. A profiling
+``profiling`` runs REMV (Deacon, sylph, EsViritu) over the samplesheet before NVD. A profiling
 failure quarantines the run, so NVD waits: the operator fixes and ``clear_error``s. (Excluding
 ``profiling`` for one run would let it go on to NVD, but ``control.exclude_gate`` is not on the CLI
 yet.)

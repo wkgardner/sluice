@@ -527,30 +527,32 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
         "LabKey list receiving the expanded metagenomic BLAST hits.",
         probe=ProbeKind.ENDPOINT,
     ),
-    # -- Profiling (silly-fast-bfx, before NVD) ------------------------------
+    # -- Profiling (REMV, before NVD) ---------------------------------------
     ConfigField(
         "profiling_repo_dir",
         FieldKind.EXTERNAL_PATH,
         "profiling",
-        "The silly-fast-bfx pipeline checkout. Its pyproject.toml's dev "
-        "environment pins the Nextflow (>=26.04.6) the pipeline requires.",
+        "The REMV (rapid-ww-metagenomics) pipeline checkout. Its pixi.toml "
+        "pins the Nextflow (>=26.04.0) the pipeline requires.",
         probe=ProbeKind.PATH_EXISTS,
     ),
     ConfigField(
         "profiling_params_file",
         FieldKind.EXTERNAL_PATH,
         "profiling",
-        "The operator's silly-fast-bfx params YAML: the deacon and sylph "
-        "reference specs, skip_skope: true. Must NOT set input, results or "
-        "work_dir — sluice passes those per run. Keep it in ~/.sluice/profiling/.",
+        "The operator's REMV params YAML: reference paths, a shared "
+        "ospool_staging_root (holding containers/) and ospool_accounting_group. "
+        "Must NOT set input, outdir or run_id — sluice passes those per run. "
+        "Keep it in ~/.sluice/profiling/.",
         probe=ProbeKind.PATH_EXISTS,
     ),
     ConfigField(
         "profiling_site_config",
         FieldKind.EXTERNAL_PATH,
         "profiling",
-        "The Nextflow site config (CHTC / nf-ospool executor, container). No "
-        "tower block or other secrets. Keep it in ~/.sluice/profiling/.",
+        "The Nextflow site config: the OSPool config file that ships with "
+        "REMV (CHTC executor and the container each process runs in). No tower "
+        "block or other secrets.",
         probe=ProbeKind.PATH_EXISTS,
     ),
     ConfigField(
@@ -583,8 +585,8 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
         "profiling_profile",
         FieldKind.VALUE,
         "profiling",
-        "Nextflow profile from the site config to run under (e.g. chtc_htc). "
-        "Leave empty for none.",
+        "Nextflow profile from the site config to run under. REMV's OSPool "
+        "config has none, so leave it empty.",
         probe=ProbeKind.NONE,
         required=False,
     ),

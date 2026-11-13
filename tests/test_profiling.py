@@ -1,4 +1,4 @@
-"""Behavioral tests for the ``profiling`` gate — silly-fast-bfx before NVD.
+"""Behavioral tests for the ``profiling`` gate — REMV before NVD.
 
 Tested entirely offline, like ``tests/test_nvd.py``: ``Popen`` is injected, so no Nextflow, no pixi
 environment, and no HTCondor. Real files under ``tmp_path`` for the launch directory, the log, and
@@ -16,6 +16,7 @@ from sluice.gates.profiling import (
     ProfilingError,
     build_profiling_command,
     count_failed_tasks,
+    remv_run_id_for,
     resolve_profiling_launch_dir,
     run_profiling_gate,
 )
@@ -25,6 +26,9 @@ from sluice.gates.samplesheet import SAMPLESHEET_FILENAME
 # the columns that matter here. The gate reads ``status`` by name, so extra or
 # reordered columns in a real trace do not matter.
 TRACE_HEADER = "task_id\thash\tname\tstatus\texit\n"
+
+# A real Illumina run name: its first field is the sequencing date REMV's run_id uses.
+RUN_NAME = "20261106_LH00642_0232_B25FGW7LT4"
 
 
 def make_context(tmp_path, *, experiment_id=4471, with_samplesheet=True, **overrides):
@@ -37,7 +41,7 @@ def make_context(tmp_path, *, experiment_id=4471, with_samplesheet=True, **overr
             encoding="utf-8",
         )
     config = {
-        "profiling_repo_dir": str(tmp_path / "silly-fast-bfx"),
+        "profiling_repo_dir": str(tmp_path / "rapid-ww-metagenomics"),
         "profiling_params_file": str(tmp_path / "profiling" / "params.yaml"),
         "profiling_site_config": str(tmp_path / "profiling" / "site.config"),
         "profiling_results_base": str(tmp_path / "results"),
@@ -49,7 +53,7 @@ def make_context(tmp_path, *, experiment_id=4471, with_samplesheet=True, **overr
     return types.SimpleNamespace(
         workdir=workdir,
         config=config,
-        run_row={"name": "run_A", "experiment_id": experiment_id},
+        run_row={"name": RUN_NAME, "experiment_id": experiment_id},
     )
 
 
@@ -59,19 +63,27 @@ def trace_path_for(context) -> pathlib.Path:
     return (
         pathlib.Path(context.config["profiling_results_base"])
         / str(experiment_id)
-        / "profiling-results"
+        / "results"
         / "pipeline_info"
         / "execution_trace.txt"
     )
 
 
-def write_trace(context, statuses) -> pathlib.Path:
-    """Write a trace file with one task row per status, as Nextflow would."""
+def write_trace(context, statuses, task_names=None) -> pathlib.Path:
+    """Write a trace file with one attempt row per status, as Nextflow would.
+
+    Each row is its own task (``TASK_1``, ``TASK_2`` …) unless ``task_names``
+    gives the names, which lets a test write two attempts of one task.
+    """
     trace_path = trace_path_for(context)
     trace_path.parent.mkdir(parents=True, exist_ok=True)
+    if task_names is None:
+        task_names = [f"TASK_{index}" for index in range(1, len(statuses) + 1)]
     rows = [
-        f"{index}\tab/cdef{index}\tTASK_{index}\t{status}\t0\n"
-        for index, status in enumerate(statuses, start=1)
+        f"{index}\tab/cdef{index}\t{task_name}\t{status}\t0\n"
+        for index, (task_name, status) in enumerate(
+            zip(task_names, statuses, strict=True), start=1
+        )
     ]
     trace_path.write_text(TRACE_HEADER + "".join(rows), encoding="utf-8")
     return trace_path
@@ -136,31 +148,28 @@ def test_a_missing_launch_base_fails_loudly_rather_than_guessing():
 # ---------------------------------------------------------------------------
 
 
-def test_the_command_runs_nextflow_from_the_pipelines_own_pixi_dev_env(tmp_path):
-    """Nextflow comes from silly-fast-bfx's ``dev`` env, not whatever is on PATH.
+def test_the_command_runs_nextflow_from_the_pipelines_own_pixi_env(tmp_path):
+    """Nextflow comes from REMV's own ``pixi.toml`` env, not whatever is on PATH.
 
-    The pipeline hard-requires Nextflow ``>=26.04.6`` (``nextflowVersion = '!…'``)
-    and the host's Nextflow is older; the pipeline's own pixi ``dev`` environment
-    pins the right one.
+    REMV requires Nextflow ``>=26.04.0`` and the host's Nextflow is older; the
+    pipeline's pixi environment pins the right one.
     """
     context = make_context(tmp_path)
     repo = context.config["profiling_repo_dir"]
 
     command = build_profiling_command(
-        context.config, context.workdir / SAMPLESHEET_FILENAME, 4471
+        context.config, context.workdir / SAMPLESHEET_FILENAME, 4471, RUN_NAME
     )
 
-    assert command[:8] == [
+    assert command[:7] == [
         "pixi",
         "run",
         "--manifest-path",
-        f"{repo}/pyproject.toml",
-        "-e",
-        "dev",
+        f"{repo}/pixi.toml",
         "nextflow",
         "run",
+        repo,
     ]
-    assert command[8] == repo
 
 
 def test_the_command_carries_the_operator_files_and_per_run_paths(tmp_path):
@@ -168,13 +177,14 @@ def test_the_command_carries_the_operator_files_and_per_run_paths(tmp_path):
 
     The per-run values are CLI params, which Nextflow ranks above the params
     file — so the operator's reference YAML is passed through untouched and
-    sluice never has to parse or merge YAML.
+    sluice never has to parse or merge YAML. The trace is requested explicitly
+    because REMV does not write one by default, and the gate needs it.
     """
     context = make_context(tmp_path)
     config = context.config
     samplesheet = context.workdir / SAMPLESHEET_FILENAME
 
-    command = build_profiling_command(config, samplesheet, 4471)
+    command = build_profiling_command(config, samplesheet, 4471, RUN_NAME)
 
     def value_after(flag):
         return command[command.index(flag) + 1]
@@ -182,13 +192,16 @@ def test_the_command_carries_the_operator_files_and_per_run_paths(tmp_path):
     assert value_after("-c") == config["profiling_site_config"]
     assert value_after("-params-file") == config["profiling_params_file"]
     assert value_after("--input") == str(samplesheet.absolute())
-    assert value_after("--results") == (
-        f"{config['profiling_results_base']}/4471/profiling-results"
-    )
-    assert value_after("--work_dir") == (
-        f"{config['profiling_results_base']}/4471/profiling-work"
-    )
+    assert value_after("--outdir") == f"{config['profiling_results_base']}/4471/results"
+    assert value_after("-work-dir") == f"{config['profiling_results_base']}/4471/work"
+    assert value_after("-with-trace") == str(trace_path_for(context))
+    assert value_after("--run_id") == "rww_20261106_4471"
     assert "-resume" in command
+
+
+def test_the_run_id_uses_the_sequencing_date_so_it_is_stable_across_retries():
+    """``run_id`` is a task input; a launch-date stamp would void -resume on a later day."""
+    assert remv_run_id_for(RUN_NAME, 32824) == "rww_20261106_32824"
 
 
 def test_the_profile_flag_is_passed_only_when_configured(tmp_path):
@@ -196,16 +209,19 @@ def test_the_profile_flag_is_passed_only_when_configured(tmp_path):
     context = make_context(tmp_path)
     samplesheet = context.workdir / SAMPLESHEET_FILENAME
 
-    without = build_profiling_command(context.config, samplesheet, 4471)
+    without = build_profiling_command(context.config, samplesheet, 4471, RUN_NAME)
     assert "-profile" not in without
 
     empty = build_profiling_command(
-        {**context.config, "profiling_profile": ""}, samplesheet, 4471
+        {**context.config, "profiling_profile": ""}, samplesheet, 4471, RUN_NAME
     )
     assert "-profile" not in empty
 
     with_profile = build_profiling_command(
-        {**context.config, "profiling_profile": "chtc_htc"}, samplesheet, 4471
+        {**context.config, "profiling_profile": "chtc_htc"},
+        samplesheet,
+        4471,
+        RUN_NAME,
     )
     assert with_profile[-2:] == ["-profile", "chtc_htc"]
 
@@ -216,7 +232,7 @@ def test_a_missing_command_key_raises_naming_itself(tmp_path):
     del context.config["profiling_params_file"]
 
     with pytest.raises(KeyError, match="profiling_params_file"):
-        build_profiling_command(context.config, "/s/samplesheet.csv", 4471)
+        build_profiling_command(context.config, "/s/samplesheet.csv", 4471, RUN_NAME)
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +241,7 @@ def test_a_missing_command_key_raises_naming_itself(tmp_path):
 
 
 def test_count_failed_tasks_counts_only_failed_rows(tmp_path):
-    """COMPLETED and CACHED rows are fine; only FAILED rows count."""
+    """COMPLETED and CACHED tasks are fine; only tasks that never succeeded count."""
     context = make_context(tmp_path)
     trace_path = write_trace(
         context, ["COMPLETED", "CACHED", "FAILED", "COMPLETED", "FAILED"]
@@ -239,6 +255,22 @@ def test_count_failed_tasks_is_zero_for_a_clean_run(tmp_path):
     context = make_context(tmp_path)
 
     assert count_failed_tasks(write_trace(context, ["COMPLETED", "CACHED"])) == 0
+
+
+def test_a_failure_that_a_retry_recovered_is_not_counted(tmp_path):
+    """The trace has a row per attempt; a task that later succeeded did not fail.
+
+    REMV's real 32824 run had exactly this: ``WRITE_SAMPLE_STATUS`` exited 255,
+    was retried, and completed. Counting its FAILED row would quarantine a good run.
+    """
+    context = make_context(tmp_path)
+    trace_path = write_trace(
+        context,
+        ["FAILED", "COMPLETED", "FAILED", "FAILED"],
+        task_names=["RETRIED (s1)", "RETRIED (s1)", "BROKEN (s2)", "BROKEN (s2)"],
+    )
+
+    assert count_failed_tasks(trace_path) == 1  # BROKEN (s2) only, counted once
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +307,7 @@ def test_failed_tasks_quarantine_even_when_nextflow_exits_zero(tmp_path):
     result = run_profiling_gate(context, popen=fake_popen(exit_code=0))
 
     assert result.outcome is GateOutcome.FAILURE
-    assert "2 failed task" in result.reason
+    assert "2 task(s) never succeeded" in result.reason
     assert str(trace_path) in result.reason
 
 
