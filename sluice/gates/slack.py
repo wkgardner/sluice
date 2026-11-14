@@ -62,8 +62,6 @@ log = structlog.get_logger("sluice.gates.slack")
 TOKEN_ENV_VAR = "SLACK_BOT_TOKEN"
 
 
-# Terminal outcomes -> the icon leading the parent message. Keyed on the daemon's
-# own vocabulary (the `outcome` it passes to finish_run_thread).
 def _total_duration_text(row) -> str | None:
     """Wall-clock from detection to completion, human-scaled, or None if unknowable."""
     detected, completed = row["detected_at"], row["completed_at"]
@@ -74,14 +72,6 @@ def _total_duration_text(row) -> str | None:
     except (ValueError, TypeError):
         return None
     return format_duration(int(elapsed.total_seconds() * 1000))
-
-
-_OUTCOME_ICONS = {
-    "completed": "✅",
-    "quarantined": "🚨",
-    "held": "⏸️",
-    "skipped": "⏭️",
-}
 
 
 def read_bot_token(config) -> str | None:
@@ -221,7 +211,7 @@ class SlackNotifier:
             experiment_id = experiment_id or row["experiment_id"]
             size_tb = size_tb if size_tb is not None else row["size_tb"]
         text = (
-            f"▶ *{run_name}*\n{_format_metadata(experiment_id, size_tb)}\n"
+            f"*{run_name}*\n{_format_metadata(experiment_id, size_tb)}\n"
             "Status: processing"
         )
         response = self._post(text)
@@ -246,7 +236,7 @@ class SlackNotifier:
         Same failure posture as ``_post``: a Slack failure never fails work.
         """
         text = (
-            f"\u25b6 *{run_name}*\n"
+            f"*{run_name}*\n"
             f"{_format_metadata(row['experiment_id'], row['size_tb'])}\n"
             f"Status: {status}"
         )
@@ -287,8 +277,8 @@ class SlackNotifier:
         quarantine text is written to be actionable and abbreviating it here would
         force a trip to the CLI.
         """
-        icon = _OUTCOME_ICONS.get(outcome, "•")
-        body = f"{icon} *{run_name}* — {outcome}"
+        # Plain words, no emoji (request 2026-11-13).
+        body = f"*{run_name}* — {outcome}"
         row = self._run_row(run_name)
         if row is not None and outcome == "completed":
             # The numbers anyone opening a finished thread wants (sweep
@@ -309,7 +299,7 @@ class SlackNotifier:
         # The parent is the channel's one line per run — a terminal outcome
         # must not leave it saying "processing".
         if row is not None and row["slack_thread_ts"]:
-            self._rewrite_parent(run_name, row, f"{icon} {outcome}")
+            self._rewrite_parent(run_name, row, outcome)
 
     # -- the one place that talks to Slack --------------------------------
 

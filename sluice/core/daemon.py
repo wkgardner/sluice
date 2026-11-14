@@ -29,7 +29,11 @@ from collections.abc import Callable, Mapping
 import structlog
 
 from sluice.core import control, stop
-from sluice.core.context import is_safe_path_component, resolve_context
+from sluice.core.context import (
+    is_safe_path_component,
+    resolve_context,
+    with_start_announcer,
+)
 from sluice.core.db import (
     get_connection,
     get_metadata,
@@ -569,9 +573,30 @@ def _quarantine_without_gate(db_path, run_name, reason: str, notifier) -> str:
 # Gates announced in Slack BEFORE they run: the hours-long ones that would
 # otherwise leave the thread silent between the previous milestone and their
 # terminal outcome (production request 2026-09-22 — NVD launched with nothing
-# in the channel saying so). ``profiling`` too: it also launches a Nextflow run
-# that can sit in the HTCondor queue before NVD starts.
-GATES_ANNOUNCED_AT_START = ("download", "profiling", "nvd")
+# in the channel saying so).
+GATES_ANNOUNCED_AT_START = ("download",)
+
+# The Tower-enabled Nextflow gates announce their OWN start, through
+# ``RunContext.announce_start``, once Nextflow has recorded the run's Seqera
+# watch link — so "started" carries the link to monitor it (request
+# 2026-11-13). The link exists only seconds after launch, inside gate.run.
+GATES_ANNOUNCING_THEIR_OWN_START = ("profiling", "nvd")
+
+
+def _start_announcer(notifier, run_name, gate):
+    """The callback a Nextflow gate calls once its pipeline has started.
+
+    Posts ``<gate name> started``, plus the Seqera link when the gate found one.
+    Through ``safe_notify``, so a Slack failure never reaches the gate.
+    """
+
+    def announce_start(watch_url):
+        text = f"{gate.name} started"
+        if watch_url:
+            text = f"{text} \u00b7 monitor progress on Seqera: {watch_url}"
+        safe_notify(notifier, "post_milestone", run_name, text)
+
+    return announce_start
 
 
 def _milestone_metrics(metadata) -> str:
@@ -693,6 +718,10 @@ def process_run(config, run_name, *, registry, notifier=None, should_stop=None) 
 
         # The caller-mkdirs obligation (plan 04 §7): create workdir before run.
         context.workdir.mkdir(parents=True, exist_ok=True)
+        if gate.id in GATES_ANNOUNCING_THEIR_OWN_START:
+            context = with_start_announcer(
+                context, _start_announcer(notifier, run_name, gate)
+            )
 
         # Time gate.run with a monotonic clock (no datetime import); the persist
         # write_txn opens only AFTER this returns (short transactions, §5).

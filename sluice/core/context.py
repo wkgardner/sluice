@@ -10,11 +10,16 @@ arrow — ``tests/test_context.py`` enforces it by ast parse.
 import dataclasses
 import pathlib
 import types
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 # The declared public surface (db unit-7 precedent), grown as names land
 # (plan 04 §4).
-__all__ = ["RunContext", "is_safe_path_component", "resolve_context"]
+__all__ = [
+    "RunContext",
+    "is_safe_path_component",
+    "resolve_context",
+    "with_start_announcer",
+]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -32,12 +37,24 @@ class RunContext:
     ``db_path`` still does not license a gate write (ADR-0002). The field is
     OPTIONAL with a sealed empty default: direct constructions that omit it
     stay valid, and ``resolve_context`` fills it on the production path.
+
+    ``announce_start`` is the one deliberate opening in "no notifier": an
+    optional callable the daemon sets for the hours-long Nextflow gates, which
+    call it once with their Seqera watch link (or ``None``) when the pipeline
+    has started. It is a plain function of one string — it cannot open, rewrite
+    or close a thread, read state, or mention anyone, and the daemon wraps it in
+    ``safe_notify`` so a Slack failure never reaches the gate. It exists because
+    the link only appears seconds AFTER launch, while the gate is blocked, so
+    the daemon cannot post it before or after ``gate.run``. ``None`` (the
+    default, and what ``resolve_context`` returns) means "announce nothing";
+    the daemon adds one with ``with_start_announcer``.
     """
 
     workdir: pathlib.Path
     db_path: pathlib.Path
     config: Mapping[str, object]
     run_row: Mapping[str, object] = types.MappingProxyType({})
+    announce_start: Callable[[str | None], None] | None = None
 
     def __post_init__(self) -> None:
         """Seal ``config`` and ``run_row`` as read-only snapshots of the mappings passed in.
@@ -161,3 +178,13 @@ def resolve_context(run_row, config: Mapping[str, object]) -> RunContext:
         config=config,
         run_row=run_snapshot,
     )
+
+
+def with_start_announcer(context: RunContext, announce_start) -> RunContext:
+    """Return ``context`` with the daemon's start callback attached (ADR-0008).
+
+    A separate step rather than a ``resolve_context`` parameter, so that function
+    stays the pure ``(run_row, config)`` derivation plan 04 fact 3 pins. Every
+    other field is carried over unchanged.
+    """
+    return dataclasses.replace(context, announce_start=announce_start)

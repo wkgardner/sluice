@@ -51,12 +51,14 @@ completed). Only a task with no ``COMPLETED`` or ``CACHED`` attempt counts as fa
 import csv
 import pathlib
 import subprocess
+import time
 from typing import Any
 
 import structlog
 
 from sluice.core.gate import Gate, GateOutcome, GateResult, no_op_invalidate
 from sluice.gates.samplesheet import SAMPLESHEET_FILENAME
+from sluice.gates.seqera import LINES_TO_WAIT_FOR_WATCH_URL, find_watch_url
 
 __all__ = [
     "PROFILING",
@@ -205,17 +207,31 @@ def count_failed_tasks(trace_path) -> int:
     return len(failed_task_names - succeeded_task_names)
 
 
-def _stream_to_log(process, log_path, run_name) -> int:
+def _stream_to_log(
+    process,
+    log_path,
+    run_name,
+    announce_start=None,
+    nextflow_log_path=None,
+    launched_at=0.0,
+) -> int:
     """Stream the pipeline's output to its log, heartbeating, and return the exit code.
 
     Copied from ``nvd._stream_to_log``. D3: append mode with a run-start banner,
     so a retry never destroys the failed attempt's log. D5: a coarse heartbeat
     every 100 lines distinguishes "still working" from "hung" on a gate with no
     time bound (⚑F).
+
+    Seqera link: when ``announce_start`` is given (the daemon's callback), it is
+    called exactly once — with the run's watch link as soon as Nextflow records
+    it, or with ``None`` after ``LINES_TO_WAIT_FOR_WATCH_URL`` lines without one.
+    ``nextflow_log_path`` (``<launch dir>/.nextflow.log``) and ``launched_at``
+    are where and since when to look (see ``sluice.gates.seqera``).
     """
     log_path = pathlib.Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     lines_seen = 0
+    watch_url_pending = announce_start is not None
     with log_path.open("a", encoding="utf-8") as log_file:
         log_file.write(f"\n=== profiling run start: {run_name} ===\n")
         log_file.flush()
@@ -223,12 +239,22 @@ def _stream_to_log(process, log_path, run_name) -> int:
             log_file.write(line)
             log_file.flush()
             lines_seen += 1
+            if watch_url_pending:
+                watch_url = find_watch_url(line, nextflow_log_path, launched_at)
+                if watch_url or lines_seen >= LINES_TO_WAIT_FOR_WATCH_URL:
+                    announce_start(watch_url)
+                    watch_url_pending = False
             if lines_seen % 100 == 0:
                 log.info(
                     "profiling.heartbeat",
                     **{"run.name": run_name, "profiling.output_lines": lines_seen},
                 )
-    return process.wait()
+    exit_code = process.wait()
+    if watch_url_pending:
+        # The pipeline ended inside the wait window: still say it started, so the
+        # thread never jumps straight from the previous gate to this one's outcome.
+        announce_start(None)
+    return exit_code
 
 
 # ---- Layer 2: the orchestrator. Reads the context, returns a result. ----
@@ -307,6 +333,7 @@ def run_profiling_gate(context: Any, popen=subprocess.Popen) -> GateResult:
     )
 
     try:
+        launched_at = time.time()  # a .nextflow.log older than this is stale
         process = popen(
             command,
             cwd=str(launch_dir),
@@ -315,7 +342,16 @@ def run_profiling_gate(context: Any, popen=subprocess.Popen) -> GateResult:
             text=True,
             bufsize=1,
         )
-        exit_code = _stream_to_log(process, log_path, run_name)
+        exit_code = _stream_to_log(
+            process,
+            log_path,
+            run_name,
+            # The daemon's start callback (RunContext.announce_start); absent in
+            # contexts built without one, which then announce nothing.
+            announce_start=getattr(context, "announce_start", None),
+            nextflow_log_path=launch_dir / ".nextflow.log",
+            launched_at=launched_at,
+        )
     except FileNotFoundError as missing_binary:
         return GateResult(
             GateOutcome.FAILURE,
@@ -368,7 +404,7 @@ def run_profiling_gate(context: Any, popen=subprocess.Popen) -> GateResult:
 
 PROFILING = Gate(
     id="profiling",
-    name="REMV profiling",
+    name="REMV pipeline",
     satisfied_column="profiling_completed",  # migration 012
     order=4,  # TRUE execution order — after samplesheet (3), before nvd (5); v3.3 renumbers a copy to 5
     needs=("samplesheet",),  # consumes samplesheet.csv; nvd does not need this gate

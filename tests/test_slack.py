@@ -5,6 +5,7 @@ fake that records what would have been posted. That is the whole point of the ad
 the world stays outside.
 """
 
+import re
 import sqlite3
 
 import pytest
@@ -199,7 +200,7 @@ def test_a_completed_run_does_not_mention_anyone(state_db, tmp_path):
     )
 
     assert "<@U111>" not in client.posts[0]["text"]
-    assert "✅" in client.posts[0]["text"]
+    assert "completed" in client.posts[0]["text"]
 
 
 def test_an_unreadable_mention_file_still_posts_the_message(state_db, tmp_path):
@@ -381,6 +382,29 @@ def test_terminal_outcomes_update_the_parent_status(state_db):
     assert len(client.updates) == 1
     parent = client.updates[0]
     assert parent["ts"] == "1722600000.000100"
-    assert "🚨 quarantined" in parent["text"]
+    assert "Status: quarantined" in parent["text"]
     assert "exp 4471" in parent["text"]
     assert "processing" not in parent["text"]
+
+
+def test_no_message_carries_an_emoji(state_db):
+    """Notifications are plain text (request 2026-11-13): no icons on any state.
+
+    Checks the parent post, a milestone, and both terminal outcomes with their
+    parent rewrites, against the emoji blocks Slack renders as pictures.
+    """
+    emoji_pattern = re.compile("[\U0001f300-\U0001faff☀-➿▶⏩-⏺]")
+    client = FakeSlackClient()
+    notifier = notifier_for(state_db, client)
+
+    notifier.open_run_thread("SEQ_001")
+    with write_txn(state_db) as connection:
+        update_run(connection, "SEQ_001", {"slack_thread_ts": "1722600000.000100"})
+    notifier.post_milestone("SEQ_001", "NVD pipeline started")
+    notifier.finish_run_thread("SEQ_001", "quarantined", "boom")
+    notifier.finish_run_thread("SEQ_001", "completed")
+
+    texts = [post["text"] for post in client.posts]
+    texts += [update["text"] for update in client.updates]
+    assert texts
+    assert [text for text in texts if emoji_pattern.search(text)] == []

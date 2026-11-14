@@ -198,15 +198,15 @@ def format_report(samples, *, dry_run: bool, experiment_id) -> str:
     """The Slack report: a one-line summary, then every sample and its status.
 
     Byte-format parity with the poller's ``manifest_text`` so the channel reads as it
-    always has: ``⚠️`` when anything was skipped, else ``✅``; ``[DRY-RUN]`` and
-    "would insert" in dry-run mode; a monospace table of every sample.
+    always has, minus its emoji (removed 2026-11-13): ``[DRY-RUN]`` and "would
+    insert" in dry-run mode; a monospace table of every sample. A skip still
+    @-mentions the on-call (``notice_mention``), which is the real alert.
     """
     skipped = _count(samples, SKIPPED)
-    emoji = "⚠️" if skipped else "✅"
     dry_run_label = "[DRY-RUN] " if dry_run else ""
     insert_verb = "would insert" if dry_run else "inserted"
     header = (
-        f"{emoji} {dry_run_label}Sample registration (experiment `{experiment_id}` — "
+        f"{dry_run_label}Sample registration (experiment `{experiment_id}` — "
         f"{len(samples)} samples): {_count(samples, INSERT)} {insert_verb}, "
         f"{_count(samples, ALREADY_REGISTERED)} already registered, {skipped} skipped"
     )

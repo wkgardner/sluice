@@ -414,3 +414,48 @@ def test_the_gate_declares_its_place_in_the_pipeline():
     assert PROFILING.needs == ("samplesheet",)
     assert PROFILING.satisfied_column == "profiling_completed"
     assert dict(PROFILING.persists) == {}
+
+
+# ---------------------------------------------------------------------------
+# The start announcement (ADR-0008).
+# ---------------------------------------------------------------------------
+
+
+def test_the_seqera_link_is_read_from_this_launchs_nextflow_log(tmp_path):
+    """REMV's Nextflow 26.10 logs the link only in .nextflow.log, never the console."""
+    announced = []
+    context = make_context(tmp_path)
+    context.announce_start = announced.append
+    write_trace(context, ["COMPLETED"])
+    watch_url = "https://cloud.seqera.io/orgs/OConnor_lab/workspaces/nvd/watch/4dHTL5OQ"
+    launch_dir = tmp_path / "profiling-launch" / "4471"
+
+    def popen_that_logs_the_link(command, **kwargs):
+        # Nextflow writes its log in the launch dir as it starts.
+        (launch_dir / ".nextflow.log").write_text(
+            f"DEBUG TowerObserver - workflow url: {watch_url}\n", encoding="utf-8"
+        )
+        return types.SimpleNamespace(
+            stdout=iter(["[PROCESS ab/cdef12] RAPID_WW:REFERENCE_FILTER (s1)\n"]),
+            wait=lambda: 0,
+        )
+
+    result = run_profiling_gate(context, popen=popen_that_logs_the_link)
+
+    assert result.outcome is GateOutcome.SUCCESS
+    assert announced == [watch_url]
+
+
+def test_a_failed_launch_announces_nothing(tmp_path):
+    """No pipeline started (missing binary), so no "started" — only the quarantine."""
+    announced = []
+    context = make_context(tmp_path)
+    context.announce_start = announced.append
+
+    def popen_without_pixi(command, **kwargs):
+        raise FileNotFoundError("pixi")
+
+    result = run_profiling_gate(context, popen=popen_without_pixi)
+
+    assert result.outcome is GateOutcome.FAILURE
+    assert announced == []

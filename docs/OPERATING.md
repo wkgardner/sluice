@@ -501,8 +501,8 @@ If you need one, that is a "get hold of Will" situation.
 **Registration records each sample in LabKey's sample-metadata list** (`production-v3.3` onward),
 right after the samplesheet. It posts a report to the run's Slack thread:
 
-- **`✅`** — every sample is registered, either just now or already.
-- **`⚠️` with an @-mention** — some samples could not be registered, because their name prefix is
+- **`0 skipped`** — every sample is registered, either just now or already.
+- **`N skipped` with an @-mention** — some samples could not be registered, because their name prefix is
   not on the authority list or their name or date could not be parsed. **The run carries on**; these
   samples have no metadata until someone adds the prefix or registers them by hand.
 - **`[DRY-RUN]`** — `labkey_register_dry_run` is on, so the report shows what it would have inserted
@@ -525,6 +525,8 @@ in `work/`). Its tables carry `run_id` `rww_<sequencing date>_<experiment id>`. 
 NVD, but on CHTC it still waits in the HTCondor queue. **If it fails, the run is quarantined
 and NVD does not start** until the cause is fixed and the error cleared. Its log is
 `profiling_log_dir/<experiment id>.log`, appended across retries like NVD's.
+
+**Slack messages are plain text** (no emoji). The NVD and REMV "started" replies carry the run's Seqera Platform link (`… · monitor progress on Seqera: <link>`) once Nextflow has recorded it; with Tower off they just say "started".
 
 **NVD runs take hours.** A run sitting on the `nvd` gate is normal, not stuck. To tell working from
 hung, look at the NVD log — its path is in the run's quarantine reason if it failed, and otherwise

@@ -160,9 +160,7 @@ def test_report_lists_every_sample_with_its_status():
     text = format_report(samples, dry_run=False, experiment_id=32743)
 
     first_line = text.splitlines()[0]
-    assert first_line.startswith(
-        "⚠️ Sample registration (experiment `32743` — 2 samples)"
-    )
+    assert first_line.startswith("Sample registration (experiment `32743` — 2 samples)")
     assert "1 inserted, 0 already registered, 1 skipped" in first_line
     assert "WI_Madison_MMSD_20261006_S7" in text
     assert "skipped: unknown_prefix" in text
@@ -176,7 +174,7 @@ def test_dry_run_report_says_so():
 
     text = format_report(samples, dry_run=True, experiment_id=1)
 
-    assert text.startswith("✅ [DRY-RUN] Sample registration")
+    assert text.startswith("[DRY-RUN] Sample registration")
     assert "1 would insert" in text
     assert "would insert" in text.splitlines()[-2]
 
@@ -242,7 +240,7 @@ def test_gate_inserts_new_samples_and_reports_quietly(tmp_path):
     assert result.metadata["already_registered"] == 1
     assert result.metadata["skipped"] == 0
     assert result.metadata["dry_run"] is False
-    assert result.metadata["notice"].startswith("✅ Sample registration")
+    assert result.metadata["notice"].startswith("Sample registration")
     assert result.metadata["notice_mention"] is False
 
 

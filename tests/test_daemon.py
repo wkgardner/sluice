@@ -2005,16 +2005,96 @@ def test_announced_gates_post_a_started_milestone(prepared, monkeypatch):
 
 
 def test_the_long_gates_are_announced_at_start():
-    """``download``, ``profiling`` and ``nvd`` post "started" — the hours-long legs.
+    """``download`` is announced by the daemon; ``profiling`` and ``nvd`` announce themselves.
 
-    Profiling and nvd each launch a Nextflow run (HTCondor queue wait included);
-    download is a multi-hour rsync the poller's threads always announced.
-    Without the announcements the thread goes silent exactly when the most is
-    happening (notification sweep round 2, 2026-10-05).
+    All three are the hours-long legs; without a "started" the thread goes silent
+    exactly when the most is happening (notification sweep round 2, 2026-10-05).
+    The two Nextflow gates post their own start so it can carry the Seqera link,
+    which only exists after launch (ADR-0008).
     """
-    from sluice.core.daemon import GATES_ANNOUNCED_AT_START
+    from sluice.core.daemon import (
+        GATES_ANNOUNCED_AT_START,
+        GATES_ANNOUNCING_THEIR_OWN_START,
+    )
 
-    assert set(GATES_ANNOUNCED_AT_START) == {"download", "profiling", "nvd"}
+    assert set(GATES_ANNOUNCED_AT_START) == {"download"}
+    assert set(GATES_ANNOUNCING_THEIR_OWN_START) == {"profiling", "nvd"}
+
+
+def _gate_that_announces(gate_id, watch_url):
+    """A gate that calls its context's start callback once, then succeeds."""
+
+    def run(context):
+        context.announce_start(watch_url)
+        return GateResult(GateOutcome.SUCCESS)
+
+    return Gate(
+        id=gate_id,
+        name="Example pipeline",
+        satisfied_column="mock_alpha_done",
+        order=1,
+        needs=(),
+        produces=(),
+        run=run,
+        invalidate=lambda context: None,
+    )
+
+
+def test_a_nextflow_gate_posts_its_start_with_the_seqera_link(prepared):
+    """The callback posts "<name> started" with the link, before the completion milestone."""
+    watch_url = "https://cloud.seqera.io/orgs/O/workspaces/nvd/watch/AbC123"
+    version, registry = _single_gate_registry(_gate_that_announces("nvd", watch_url))
+    with write_txn(prepared["state_file"]) as connection:
+        insert_run(connection, "linked_run", pipeline_version=version)
+    notifier = RecordingNotifier()
+
+    process_run(prepared, "linked_run", registry=registry, notifier=notifier)
+
+    milestones = [c[2] for c in notifier.calls if c[0] == "post_milestone"]
+    assert milestones[0] == (
+        f"Example pipeline started \u00b7 monitor progress on Seqera: {watch_url}"
+    )
+    assert milestones[1].startswith("Example pipeline completed in ")
+
+
+def test_a_start_without_a_link_still_says_started(prepared):
+    """Tower off (or no link found): the start is announced, just without a link."""
+    version, registry = _single_gate_registry(_gate_that_announces("profiling", None))
+    with write_txn(prepared["state_file"]) as connection:
+        insert_run(connection, "unlinked_run", pipeline_version=version)
+    notifier = RecordingNotifier()
+
+    process_run(prepared, "unlinked_run", registry=registry, notifier=notifier)
+
+    milestones = [c[2] for c in notifier.calls if c[0] == "post_milestone"]
+    assert milestones[0] == "Example pipeline started"
+
+
+def test_other_gates_get_no_start_callback(prepared):
+    """Only the Nextflow gates are handed ``announce_start``; every other context has None."""
+    seen = {}
+
+    def run(context):
+        seen["announce_start"] = context.announce_start
+        return GateResult(GateOutcome.SUCCESS)
+
+    plain_gate = Gate(
+        id="plain_gate",
+        name="Plain",
+        satisfied_column="mock_alpha_done",
+        order=1,
+        needs=(),
+        produces=(),
+        run=run,
+        invalidate=lambda context: None,
+    )
+    version, registry = _single_gate_registry(plain_gate)
+    with write_txn(prepared["state_file"]) as connection:
+        insert_run(connection, "plain_run", pipeline_version=version)
+
+    process_run(prepared, "plain_run", registry=registry, notifier=RecordingNotifier())
+
+    assert seen["announce_start"] is None
 
 
 def test_completed_milestones_carry_duration_and_scalar_metrics(prepared):

@@ -153,8 +153,8 @@ def test_context_derives_no_path_from_dunder_file():
     )
 
 
-def test_run_context_fields_are_exactly_workdir_db_path_config_run_row():
-    """``RunContext``'s field set is exactly ``[workdir, db_path, config, run_row]``.
+def test_run_context_fields_are_exactly_the_closed_contract():
+    """``RunContext``'s field set is exactly ``[workdir, db_path, config, run_row, announce_start]``.
 
     This one test carries facts 1 and 2 (plan 04 §2): no notifier field (the
     daemon-only caller model — events plan ⚑5 APPROVED — supersedes spec §6's
@@ -169,7 +169,9 @@ def test_run_context_fields_are_exactly_workdir_db_path_config_run_row():
     be constructed on a silently-assumed value (guardrail §8). ``run_row`` is
     deliberately optional with a sealed empty default (ADR-0006 finding 1) so a
     context resolved before any token exists — and the two direct constructions
-    below — need not name it.
+    below — need not name it. ``announce_start`` (ADR-0008) is the one narrow
+    opening in "no notifier": an optional one-string callback, ``None`` by
+    default, that the Nextflow gates use to post their start with the Seqera link.
     """
     # Local import: context is the module under construction (same rationale
     # as the import-hygiene test above).
@@ -182,11 +184,13 @@ def test_run_context_fields_are_exactly_workdir_db_path_config_run_row():
         "db_path",
         "config",
         "run_row",
+        "announce_start",
     ], (
         "RunContext's field set is the closed contract: workdir, db_path, "
-        "config (plan 04 facts 1-2) plus run_row (ADR-0006 d.3 read path). No "
-        "notifier (events plan ⚑5), no destination/remote path fields "
-        "(Plan B). Changing this set requires a plan revision or ADR."
+        "config (plan 04 facts 1-2) plus run_row (ADR-0006 d.3 read path) and "
+        "announce_start (ADR-0008). No notifier (events plan ⚑5), no "
+        "destination/remote path fields (Plan B). Changing this set requires a "
+        "plan revision or ADR."
     )
 
     fields_by_name = {field.name: field for field in declared_fields}
@@ -201,6 +205,9 @@ def test_run_context_fields_are_exactly_workdir_db_path_config_run_row():
     # finding 1): the read-path snapshot is filled by resolve_context, so a
     # direct construction that omits it must stay valid.
     assert len(fields_by_name["run_row"].default) == 0
+    # announce_start defaults to None: no gate announces anything unless the
+    # daemon hands it the callback (ADR-0008).
+    assert fields_by_name["announce_start"].default is None
 
 
 def test_run_context_is_frozen():
@@ -613,6 +620,10 @@ def test_context_exports_exactly_the_documented_surface():
     hand-copied twin, so exporting it collapses the copies rather than growing
     the API — the daemon's private ``_is_safe_path_component`` was deleted in
     the same change.
+
+    ``with_start_announcer`` is another (ADR-0008): the daemon's one way to
+    attach the Nextflow gates' start callback without widening
+    ``resolve_context``'s pinned ``(run_row, config)`` signature.
     """
     # Local import: context is the module under construction (same rationale
     # as the import-hygiene test above).
@@ -622,6 +633,7 @@ def test_context_exports_exactly_the_documented_surface():
         "RunContext",
         "resolve_context",
         "is_safe_path_component",
+        "with_start_announcer",
     }, (
         "sluice.core.context's public surface must be exactly RunContext + "
         "resolve_context + is_safe_path_component (plan 04 §1, plan 14 unit "

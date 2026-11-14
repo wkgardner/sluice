@@ -418,3 +418,39 @@ def test_the_gate_declares_its_place_in_the_pipeline():
     assert NVD.needs == ("samplesheet",)
     assert NVD.satisfied_column == "nvd_completed"
     assert dict(NVD.persists) == {}
+
+
+# ---------------------------------------------------------------------------
+# The start announcement (ADR-0008).
+# ---------------------------------------------------------------------------
+
+WATCH_URL = (
+    "https://cloud.seqera.io/orgs/OConnor_lab/workspaces/nvd/watch/5YRGhiTUzwZcD6"
+)
+
+
+def test_the_start_is_announced_once_with_the_seqera_link(tmp_path):
+    """NVD prints its link to the console; the gate announces it as soon as it appears."""
+    announced = []
+    context = make_context(tmp_path)
+    context.announce_start = announced.append
+    output = (
+        "N E X T F L O W\n",
+        f"Monitor the execution with Seqera Platform using this URL: {WATCH_URL}\n",
+        f"repeated later: {WATCH_URL}\n",
+    )
+
+    run_nvd_gate(context, popen=fake_popen(output=output))
+
+    assert announced == [WATCH_URL]
+
+
+def test_without_a_link_the_start_is_still_announced_once(tmp_path):
+    """Tower off: the gate still says it started, exactly once, with no link."""
+    announced = []
+    context = make_context(tmp_path)
+    context.announce_start = announced.append
+
+    run_nvd_gate(context, popen=fake_popen())
+
+    assert announced == [None]
