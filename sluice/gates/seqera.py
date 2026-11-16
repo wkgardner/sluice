@@ -15,15 +15,16 @@ Both end in ``/watch/<id>``, so one pattern finds either, in a console line or i
 import pathlib
 import re
 
-__all__ = ["LINES_TO_WAIT_FOR_WATCH_URL", "find_watch_url"]
+__all__ = ["SECONDS_TO_WAIT_FOR_WATCH_URL", "find_watch_url"]
 
 # Any https URL ending in /watch/<run id> — the shape of every Seqera Platform run link.
 WATCH_URL_PATTERN = re.compile(r"https://\S+/watch/[A-Za-z0-9]+")
 
-# How many console lines a gate waits for the link before announcing its start without one
-# (Tower switched off, or a Nextflow that logs it somewhere else). The link appears within the
-# first few lines when it appears at all, so this only delays the no-link announcement.
-LINES_TO_WAIT_FOR_WATCH_URL = 200
+# How long after launch a gate waits for the link before announcing its start without one
+# (Tower switched off, or a Nextflow that logs it somewhere else). Timed, not counted in lines:
+# NVD prints ~210 config warnings first (32836, 2026-11-16: link on console line 212, after a
+# 200-line window had already given up). Nextflow logs the link within a minute of startup.
+SECONDS_TO_WAIT_FOR_WATCH_URL = 600
 
 # File mtimes come from the kernel's coarse clock, so a log written just after launch can read a
 # few milliseconds older than ``time.time()`` taken before it. A stale log from an earlier attempt

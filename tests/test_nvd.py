@@ -454,3 +454,25 @@ def test_without_a_link_the_start_is_still_announced_once(tmp_path):
     run_nvd_gate(context, popen=fake_popen())
 
     assert announced == [None]
+
+
+def test_a_link_after_hundreds_of_warning_lines_is_still_found(tmp_path):
+    """32836 (2026-11-16): NVD printed ~210 config warnings before its link.
+
+    A 200-line window gave up first and posted "started" with no link. The wait
+    is timed now, so the link on line 212 is the one announced.
+    """
+    announced = []
+    context = make_context(tmp_path)
+    context.announce_start = announced.append
+    warnings = tuple(
+        "WARN: There's no process matching config selector: LABKEY_X\n"
+        for _ in range(211)
+    )
+    output = warnings + (
+        f"Monitor the execution with Seqera Platform using this URL: {WATCH_URL}\n",
+    )
+
+    run_nvd_gate(context, popen=fake_popen(output=output))
+
+    assert announced == [WATCH_URL]

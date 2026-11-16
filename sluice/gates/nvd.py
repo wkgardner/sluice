@@ -50,7 +50,7 @@ import structlog
 from sluice.core.gate import Gate, GateOutcome, GateResult, no_op_invalidate
 from sluice.gates.nvd_tool import NvdToolError, build_nvd_command
 from sluice.gates.samplesheet import SAMPLESHEET_FILENAME
-from sluice.gates.seqera import LINES_TO_WAIT_FOR_WATCH_URL, find_watch_url
+from sluice.gates.seqera import SECONDS_TO_WAIT_FOR_WATCH_URL, find_watch_url
 
 __all__ = [
     "NVD",
@@ -220,7 +220,7 @@ def _stream_to_log(
 
     Seqera link: when ``announce_start`` is given (the daemon's callback), it is
     called exactly once — with the run's watch link as soon as Nextflow records
-    it, or with ``None`` after ``LINES_TO_WAIT_FOR_WATCH_URL`` lines without one.
+    it, or with ``None`` once ``SECONDS_TO_WAIT_FOR_WATCH_URL`` pass without one.
     ``nextflow_log_path`` (``<launch dir>/.nextflow.log``) and ``launched_at``
     are where and since when to look (see ``sluice.gates.seqera``).
     """
@@ -237,7 +237,8 @@ def _stream_to_log(
             lines_seen += 1
             if watch_url_pending:
                 watch_url = find_watch_url(line, nextflow_log_path, launched_at)
-                if watch_url or lines_seen >= LINES_TO_WAIT_FOR_WATCH_URL:
+                waited_seconds = time.time() - launched_at
+                if watch_url or waited_seconds >= SECONDS_TO_WAIT_FOR_WATCH_URL:
                     announce_start(watch_url)
                     watch_url_pending = False
             # Coarse heartbeat: NVD is chatty, and one event per line would drown

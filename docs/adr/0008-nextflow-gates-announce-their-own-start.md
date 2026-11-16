@@ -22,7 +22,7 @@ field set is closed (plan 04 facts 1–2) so that a gate cannot reach Slack.
 watch link (or `None`). The daemon sets it only for the gates in
 `GATES_ANNOUNCING_THEIR_OWN_START` (`profiling`, `nvd`), and stops pre-announcing
 them. The gate calls it exactly once: when the link appears (in a console line or
-in this launch's `.nextflow.log`), or with `None` after 200 lines without one, or
+in this launch's `.nextflow.log`), or with `None` after 10 minutes without one, or
 when the pipeline ends first.
 
 This is narrower than a notifier. The callable takes one string and posts one
