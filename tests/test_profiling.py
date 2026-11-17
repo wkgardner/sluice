@@ -28,7 +28,7 @@ from sluice.gates.samplesheet import SAMPLESHEET_FILENAME
 TRACE_HEADER = "task_id\thash\tname\tstatus\texit\n"
 
 # A real Illumina run name: its first field is the sequencing date REMV's run_id uses.
-RUN_NAME = "20261106_LH00642_0232_B25FGW7LT4"
+RUN_NAME = "20261106_LH00000_0001_A00000000X"
 
 
 def make_context(tmp_path, *, experiment_id=4471, with_samplesheet=True, **overrides):
@@ -427,7 +427,7 @@ def test_the_seqera_link_is_read_from_this_launchs_nextflow_log(tmp_path):
     context = make_context(tmp_path)
     context.announce_start = announced.append
     write_trace(context, ["COMPLETED"])
-    watch_url = "https://cloud.seqera.io/orgs/OConnor_lab/workspaces/nvd/watch/4dHTL5OQ"
+    watch_url = "https://cloud.seqera.io/orgs/ExampleOrg/workspaces/nvd/watch/FakeRunId0003"
     launch_dir = tmp_path / "profiling-launch" / "4471"
 
     def popen_that_logs_the_link(command, **kwargs):

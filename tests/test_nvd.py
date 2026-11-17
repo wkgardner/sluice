@@ -221,7 +221,7 @@ def test_the_experiments_container_is_normalised_before_it_joins_the_url():
     """A leading or trailing slash on the container never doubles up in the URL.
 
     ``labkey_experiments_project`` is written both ways in real configs
-    (``/dho/experiments`` and ``dho/experiments``). A doubled slash makes a URL
+    (``/lab/experiments`` and ``lab/experiments``). A doubled slash makes a URL
     that looks right in a log line and 404s against WebDAV.
     """
     for container in ("/proj/experiments", "proj/experiments/", "/proj/experiments/"):
@@ -425,7 +425,7 @@ def test_the_gate_declares_its_place_in_the_pipeline():
 # ---------------------------------------------------------------------------
 
 WATCH_URL = (
-    "https://cloud.seqera.io/orgs/OConnor_lab/workspaces/nvd/watch/5YRGhiTUzwZcD6"
+    "https://cloud.seqera.io/orgs/ExampleOrg/workspaces/nvd/watch/FakeRunId0001"
 )
 
 

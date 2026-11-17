@@ -373,7 +373,7 @@ def test_listing_keeps_only_pipeline_inputs(tmp_path):
         "drwxr-xr-x          4,096 2026/07/30 09:12:01 .\n"
         "-rw-r--r--  1,234,567,890 2026/07/30 09:12:01 lane1_001.fastq.gz\n"
         "-rw-r--r--            256 2026/07/30 09:12:02 md5s.txt\n"
-        "-rw-r--r--            256 2026/07/30 09:12:02 SecureBio_02_SOL_md5s.txt\n"
+        "-rw-r--r--            256 2026/07/30 09:12:02 PARTNER_DELIVERY_md5s.txt\n"
         "-rw-r--r--            256 2026/07/30 09:12:02 .verified-copy.sha256\n"
         "-rw-r--r--  1,234,567,890 2026/07/30 09:12:03 lane1_001_trimmed.fastq.gz\n"
         "-rw-r--r--         41,090 2026/07/30 09:12:04 lane1.stats.txt\n"
@@ -390,7 +390,7 @@ def test_listing_keeps_only_pipeline_inputs(tmp_path):
     assert client.list_run_files("run_A") == [
         "run_A/lane1_001.fastq.gz",
         "run_A/md5s.txt",
-        "run_A/SecureBio_02_SOL_md5s.txt",
+        "run_A/PARTNER_DELIVERY_md5s.txt",
         "run_A/.verified-copy.sha256",
     ]
 

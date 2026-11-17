@@ -118,7 +118,7 @@ def build_webdav_url(config, experiment_id) -> str:
     included (PP ``nvd_helpers.py:70``).
 
     Slashes are normalised because the container is written both ways in real
-    configs (``/dho/experiments`` and ``dho/experiments``). A doubled slash makes
+    configs (``/lab/experiments`` and ``lab/experiments``). A doubled slash makes
     a URL that reads correctly in a log line and 404s against WebDAV.
 
     Raises:

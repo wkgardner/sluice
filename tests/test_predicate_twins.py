@@ -10,8 +10,8 @@ cannot call a Python function, so the pair is irreducible.
 Plan 14 collapsed every *avoidable* copy of this rule and left exactly this one
 seam. A docstring cannot fail; this file can. It runs both halves over the same
 rows and asserts they select the same runs, so editing one without the other
-turns it red immediately — the `.claude/hooks/arch_guard.py` PostToolUse hook
-runs it on any edit under ``sluice/core/``.
+turns it red immediately — a local editor hook can
+run it on any edit under ``sluice/core/``.
 
 Deliberately self-contained (its own row inserter, no import from
 ``tests/test_db.py``) so the hook can run this file alone and stay fast.

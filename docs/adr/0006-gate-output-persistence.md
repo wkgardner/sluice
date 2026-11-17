@@ -1,7 +1,7 @@
 # ADR-0006: Gate output persistence — declared typed columns, written with the checkmark
 
 Status: accepted (2026-07-31, decided by Will; evidence in
-docs/superpowers/notes/2026-07-31-gate-output-persistence-research.md)
+internal research notes)
 
 ## Context
 

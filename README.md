@@ -9,7 +9,28 @@ sluice runs a wastewater metagenomic-sequencing pipeline in production. Each
 week it picks up new sequencing runs, brings the data onto shared storage, and
 drives them through profiling and virus detection, posting progress to Slack.
 
+**Who this is for.** The production gates are built around one lab's setup
+(its sequencing server, LabKey lists, NVD and REMV pipelines, and CHTC's
+HTCondor pool), so sluice is not a turnkey tool for another lab. What carries
+over is the framework in `sluice/core/`: keep it, and write your own gates for
+your own steps ([`docs/ADDING-A-GATE.md`](docs/ADDING-A-GATE.md)).
+
 ## What it does
+
+```mermaid
+flowchart LR
+    operator(["Operator"]) -- "sluice hold / clear-error / ..." --> db[("SQLite state DB")]
+    daemon["sluice daemon<br/>(reconcile loop)"] -- "each look: what is next<br/>for every run?" --> db
+    daemon -- "runs the next gate" --> pipeline
+    daemon -- "progress and failures" --> slack(["Slack thread per run"])
+
+    subgraph pipeline ["Gates, in order, per sequencing run"]
+        direction LR
+        experiment --> download --> checksum --> samplesheet --> registration --> profiling["profiling (REMV)"] --> nvd["nvd (NVD)"]
+    end
+
+    pipeline -. "gate fails" .-> quarantine["Run quarantined<br/>until an operator clears it"]
+```
 
 The production pipeline is a fixed list of **gates**, each a unit of work that
 runs once per sequencing run, in order:
@@ -111,5 +132,3 @@ Real infrastructure values (hosts, paths, LabKey lists, the Slack channel) live
   pipeline work.
 - [`docs/adr/`](docs/adr/): the decisions the code is built on.
 - [`CONTEXT.md`](CONTEXT.md): the glossary of words this codebase uses.
-- [`docs/superpowers/specs/`](docs/superpowers/specs/): the original
-  architecture design and its errata.

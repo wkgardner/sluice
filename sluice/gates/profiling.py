@@ -131,7 +131,7 @@ def remv_run_id_for(run_name, experiment_id) -> str:
     """The ``run_id`` REMV stamps on every row of its tables: ``rww_<run date>_<experiment>``.
 
     The date is the sequencing run's (the first ``_`` field of an Illumina run
-    name, e.g. ``20261106`` from ``20261106_LH00642_0232_B25FGW7LT4``), not the
+    name, e.g. ``20261106`` from ``20261106_LH00000_0001_A00000000X``), not the
     launch date. It must be stable across attempts: ``run_id`` is a task input,
     so a value that changed on a retry day would void ``-resume``'s cache.
     """

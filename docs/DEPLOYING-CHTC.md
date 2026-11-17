@@ -222,8 +222,6 @@ proposal, not instructions.
 
 ## What `git clone` does not bring
 
-Everything sluice needs to *run* is tracked. The development tooling is not fully covered —
-`.claude/` (agents, hooks, settings) travels with the repo, but the guardrail hooks only
-protect the checkout they live in, and anything under `notes/` is untracked by design. If you
-intend to develop on CHTC rather than only run there, sync those separately and confirm the
-design of record is byte-identical across the two copies.
+Everything sluice needs to *run* is tracked. Personal development tooling (editor and agent
+settings, design notes) is not, so if you intend to develop on CHTC rather than only run there,
+copy that over separately.

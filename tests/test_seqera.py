@@ -11,19 +11,19 @@ from sluice.gates.seqera import find_watch_url
 
 NVD_CONSOLE_LINE = (
     "Monitor the execution with Seqera Platform using this URL: "
-    "https://cloud.seqera.io/orgs/OConnor_lab/workspaces/nvd/watch/5YRGhiTUzwZcD6\n"
+    "https://cloud.seqera.io/orgs/ExampleOrg/workspaces/nvd/watch/FakeRunId0001\n"
 )
 REMV_LOG_LINE = (
     "Nov-11 17:01:13.804 [main] DEBUG i.seqera.tower.plugin.TowerObserver - Platform "
-    "workflow id: 4dHTL5OQTO4mWW; workflow url: "
-    "https://cloud.seqera.io/orgs/OConnor_lab/workspaces/nvd/watch/4dHTL5OQTO4mWW\n"
+    "workflow id: FakeRunId0002; workflow url: "
+    "https://cloud.seqera.io/orgs/ExampleOrg/workspaces/nvd/watch/FakeRunId0002\n"
 )
 
 
 def test_the_link_is_found_in_a_console_line(tmp_path):
     """NVD's Nextflow prints the link to the console."""
     assert find_watch_url(NVD_CONSOLE_LINE, tmp_path / ".nextflow.log", 0) == (
-        "https://cloud.seqera.io/orgs/OConnor_lab/workspaces/nvd/watch/5YRGhiTUzwZcD6"
+        "https://cloud.seqera.io/orgs/ExampleOrg/workspaces/nvd/watch/FakeRunId0001"
     )
 
 
@@ -34,7 +34,7 @@ def test_the_link_is_found_in_this_launchs_nextflow_log(tmp_path):
     nextflow_log.write_text("startup\n" + REMV_LOG_LINE, encoding="utf-8")
 
     assert find_watch_url("[PROCESS ab/cdef12] X\n", nextflow_log, launched_at) == (
-        "https://cloud.seqera.io/orgs/OConnor_lab/workspaces/nvd/watch/4dHTL5OQTO4mWW"
+        "https://cloud.seqera.io/orgs/ExampleOrg/workspaces/nvd/watch/FakeRunId0002"
     )
 
 

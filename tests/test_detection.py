@@ -114,7 +114,7 @@ def test_parse_survives_noise():
 
 
 # A run folder carrying BOTH flat files and a delivery subdirectory — the
-# production Mizzou layout (e.g. SecureBio_02_SOL landing inside a run folder).
+# production sequencing-server layout (e.g. a partner delivery landing inside a run folder).
 # Decision 2026-09-04 (revised same day): the folder is ONE umbrella run —
 # deliveries roll up into the folder's single experiment, exactly as the
 # poller ingested them. The earlier per-delivery split is reverted.
@@ -123,9 +123,9 @@ drwxr-xr-x          4,096 2026/08/30 21:30:12 .
 drwxr-xr-x             30 2026/08/30 21:30:12 RUN_A
 -rw-r--r--  1,000,000,000 2026/08/30 14:56:17 RUN_A/S1_L001_R1_001.fastq.gz
 -rw-r--r--          1,024 2026/08/30 16:41:41 RUN_A/md5s.txt
-drwxrwxr-x          4,096 2026/08/30 18:37:41 RUN_A/SecureBio_02_SOL
--rw-r--r--  2,000,000,000 2026/08/30 14:56:17 RUN_A/SecureBio_02_SOL/S43_L001_R1_001.fastq.gz
--rw-r--r--            512 2026/08/30 16:41:41 RUN_A/SecureBio_02_SOL/.verified-copy.sha256
+drwxrwxr-x          4,096 2026/08/30 18:37:41 RUN_A/PARTNER_DELIVERY
+-rw-r--r--  2,000,000,000 2026/08/30 14:56:17 RUN_A/PARTNER_DELIVERY/S43_L001_R1_001.fastq.gz
+-rw-r--r--            512 2026/08/30 16:41:41 RUN_A/PARTNER_DELIVERY/.verified-copy.sha256
 """
 
 
@@ -148,7 +148,7 @@ def test_parse_a_nested_manifest_vouches_for_the_umbrella_run():
     """A manifest anywhere inside the folder makes the umbrella a candidate.
 
     Production deliveries carry their own manifests one level down
-    (``SecureBio_02_SOL_md5s.txt`` inside the subdir); the poller counted
+    (``PARTNER_DELIVERY_md5s.txt`` inside the subdir); the poller counted
     those, and so must sluice.
     """
     listing = "\n".join(

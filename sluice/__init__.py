@@ -3,7 +3,7 @@
 The database is the single source of truth; every operator action only writes
 state, and the daemon is the sole actor that starts or stops pipeline work.
 
-Layers (see docs/superpowers/specs/2026-07-16-sluice-architecture-design-of-record.md):
+Layers (the vocabulary is in CONTEXT.md, the binding decisions in docs/adr/):
 
 - ``sluice.core``   framework machinery, pipeline-agnostic
 - ``sluice.gates``  production gates implementing ``core.gate.Gate``

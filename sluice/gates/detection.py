@@ -56,7 +56,7 @@ def parse_rsync_listing(output: str) -> list[tuple[str, float]]:
     entries). A nested file at ANY depth joins its **top-level folder** with
     its comma-stripped size accumulated (an unparsable size skips that row
     only) — **the folder is one umbrella run**: delivery subdirectories
-    (GR0032, SecureBio_02_SOL, …) roll up into the folder's single experiment,
+    (per-partner delivery subfolders, …) roll up into the folder's single experiment,
     exactly as the poller ingested them (decision 2026-09-04, revised same
     day; the brief per-delivery split is reverted). A folder is a
     **candidate** iff it carries a checksum manifest anywhere inside (a path
