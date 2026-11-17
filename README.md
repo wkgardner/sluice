@@ -1,15 +1,15 @@
 # sluice
 
-A **state-only pipeline control plane and daemon**. It runs a long-lived
-pipeline unattended and lets operators steer it **without ever touching the
-running process**: they change state in a database, and the daemon reacts on
+A state-only pipeline control plane and daemon. It runs a long-lived
+pipeline unattended and lets operators steer it without ever touching the
+running process: they change state in a database, and the daemon reacts on
 its next look.
 
 sluice runs a wastewater metagenomic-sequencing pipeline in production. Each
 week it picks up new sequencing runs, brings the data onto shared storage, and
 drives them through profiling and virus detection, posting progress to Slack.
 
-**Who this is for.** The production gates are built around one lab's setup
+Who this is for. The production gates are built around one lab's setup
 (its sequencing server, LabKey lists, NVD and REMV pipelines, and CHTC's
 HTCondor pool), so sluice is not a turnkey tool for another lab. What carries
 over is the framework in `sluice/core/`: keep it, and write your own gates for
