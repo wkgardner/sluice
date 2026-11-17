@@ -101,3 +101,10 @@ logs/
 # 8) Ruff linting
 !/ruff.toml
 
+!/.claude/README.md
+!/.claude/settings.json
+!/.claude/hooks/*.py
+!/.claude/skills/**/*.md
+!/docs/superpowers/plans/*.md
+!/docs/superpowers/specs/2026-08-02-sluice-doctor-design.md
+!/HANDOFF.md
